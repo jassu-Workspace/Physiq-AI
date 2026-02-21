@@ -94,48 +94,7 @@ Integrated **5 premium nutrition datasets** (12,228 foods total):
 
 ---
 
-## 🚀 **Getting Started**
 
-### **Prerequisites**
-- Node.js 16+
-- npm or yarn
-- API Keys:
-  - Google Gemini API key
-  - Supabase credentials
-  - Clerk authentication keys
-
-### **Installation**
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/yourusername/physiq-ai.git
-cd physiq-ai
-
-# 2. Install dependencies
-npm install
-
-# 3. Create .env.local file with your API keys
-cat > .env.local << EOF
-VITE_SUPABASE_URL=your_supabase_url
-VITE_SUPABASE_ANON_KEY=your_supabase_key
-VITE_CLERK_PUBLISHABLE_KEY=your_clerk_key
-VITE_GOOGLE_GENAI_KEY=your_google_api_key
-EOF
-
-# 4. Start development server
-npm run dev
-
-# 5. Open browser and navigate to http://localhost:3000
-```
-
-### **Build for Production**
-
-```bash
-npm run build
-npm run preview
-```
-
----
 
 ## 📁 **Project Structure**
 
