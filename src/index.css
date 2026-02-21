@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Manrope", "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-primary: #1132d4;
+  --color-primary-light: #4f6aff;
+  --color-background-dark: #0B0C15;
+  --color-background-card: #1e202e;
+  
+  --animate-dash: dash 2s ease-in-out forwards;
+  
+  @keyframes dash {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+}
+
+body {
+  background-color: var(--color-background-dark);
+  color: #fff;
+  font-family: var(--font-sans);
+}
+
+.onboarding-light {
+  color: #0f172a;
+}
+
+.onboarding-light [class*="text-white"] {
+  color: #0f172a !important;
+}
+
+.onboarding-light [class*="text-slate-300"],
+.onboarding-light [class*="text-slate-400"],
+.onboarding-light [class*="text-slate-500"],
+.onboarding-light [class*="text-slate-600"] {
+  color: #475569 !important;
+}
+
+.onboarding-light [class*="bg-white/[0.03]"],
+.onboarding-light [class*="bg-white/[0.02]"],
+.onboarding-light [class*="bg-white/5"] {
+  background-color: rgba(255, 255, 255, 0.92) !important;
+}
+
+.onboarding-light [class*="border-white/[0.06]"],
+.onboarding-light [class*="border-white/[0.04]"],
+.onboarding-light [class*="border-white/10"],
+.onboarding-light [class*="border-white/5"] {
+  border-color: #e2e8f0 !important;
+}
+
+.onboarding-light input,
+.onboarding-light button {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.onboarding-light .bg-\[\#6C63FF\] {
+  box-shadow: 0 8px 20px rgba(108, 99, 255, 0.24) !important;
+}
+
+/* Custom Utilities for Glass and Clay effects */
+.glass-panel {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+}
+
+.clay-card {
+  background: #1e202e;
+  box-shadow: 8px 8px 16px #0b0d17, -8px -8px 16px #252b3d;
+  border: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.clay-button {
+  background: #1132d4;
+  box-shadow: 6px 6px 12px #0a1c7a, -6px -6px 12px #1848ff;
+  transition: all 0.2s ease;
+}
+
+.clay-button:active {
+  box-shadow: inset 4px 4px 8px #081661, inset -4px -4px 8px #1a4eff;
+  transform: scale(0.98);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
