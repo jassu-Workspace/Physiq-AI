@@ -2,7 +2,9 @@
 // Maintains same interfaces for system-wide compatibility
 
 import { useState, useEffect, useMemo } from 'react';
-import { supabase } from './supabase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { addDoc, collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { auth, db, ensureAuthPersistence, startAuthKeepAlive, stopAuthKeepAlive } from './firebase';
 import { ensureUserProfileExists, syncUserToBackend } from './authSync';
 import { type MuscleGroup } from '../data/exercises';
 
@@ -201,49 +203,54 @@ export function useUser() {
 
     useEffect(() => {
         const fetchUser = async () => {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (!session) {
+            const authUser = auth.currentUser;
+            if (!authUser) {
                 setUser(null);
                 return;
             }
 
             try {
-                await ensureUserProfileExists(session);
-                await syncUserToBackend(session);
+                await ensureUserProfileExists(authUser);
+                await syncUserToBackend(authUser);
             } catch (syncError) {
                 console.warn('User bootstrap sync failed:', syncError);
             }
 
-            const { data, error } = await supabase
-                .from('profiles')
-                .select('*')
-                .eq('id', session.user.id)
-                .single();
-
-            if (error) {
-                if (error.code === 'PGRST116') { // Single row not found
-                    // User has a session but no profile yet (e.g. first social login)
-                    setUser({ id: session.user.id } as UserProfile);
-                } else {
-                    console.error('Error fetching user profile:', error);
-                    setUser(null);
+            try {
+                const profileRef = doc(db, 'profiles', authUser.uid);
+                const snapshot = await getDoc(profileRef);
+                if (!snapshot.exists()) {
+                    setUser({ id: authUser.uid } as UserProfile);
+                    return;
                 }
-            } else {
-                setUser(normalizeUserProfile(data));
+
+                setUser(normalizeUserProfile(snapshot.data()));
+            } catch (error) {
+                console.error('Error fetching user profile:', error);
+                setUser(null);
             }
         };
 
-        fetchUser();
+        const bootstrapAuth = async () => {
+            await ensureAuthPersistence();
+            startAuthKeepAlive();
+            await fetchUser();
+        };
 
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-            if (session) {
-                fetchUser();
+        void bootstrapAuth();
+
+        const subscription = onAuthStateChanged(auth, (authUser) => {
+            if (authUser) {
+                void fetchUser();
             } else {
                 setUser(null);
             }
         });
 
-        return () => subscription.unsubscribe();
+        return () => {
+            subscription();
+            stopAuthKeepAlive();
+        };
     }, []);
 
     return user;
@@ -261,16 +268,13 @@ export function useWorkoutHistory(userId?: string) {
         if (!userId) return;
 
         const fetchHistory = async () => {
-            const { data, error } = await supabase
-                .from('workout_logs')
-                .select('*')
-                .eq('user_id', userId)
-                .order('date', { ascending: false });
-
-            if (error) {
-                console.error('Error fetching workout history:', error);
-            } else {
+            try {
+                const rows = await getDocs(query(collection(db, 'workout_logs'), where('user_id', '==', userId)));
+                const data = rows.docs.map((item) => item.data());
+                data.sort((a: any, b: any) => (b.date ?? 0) - (a.date ?? 0));
                 setHistory(data.map(normalizeWorkoutLog));
+            } catch (error) {
+                console.error('Error fetching workout history:', error);
             }
         };
 
@@ -296,17 +300,13 @@ export function useEmotions(userId?: string, limit: number = 30) {
         if (!userId) return;
 
         const fetchEmotions = async () => {
-            const { data, error } = await supabase
-                .from('emotional_logs')
-                .select('*')
-                .eq('user_id', userId)
-                .order('date', { ascending: false })
-                .limit(limit);
-
-            if (error) {
+            try {
+                const rows = await getDocs(query(collection(db, 'emotional_logs'), where('user_id', '==', userId)));
+                const data = rows.docs.map((item) => item.data());
+                data.sort((a: any, b: any) => (b.date ?? 0) - (a.date ?? 0));
+                setEmotions(data.slice(0, limit));
+            } catch (error) {
                 console.error('Error fetching emotions:', error);
-            } else {
-                setEmotions(data);
             }
         };
 
@@ -323,18 +323,13 @@ export function useAIMessages(userId?: string, limit: number = 20) {
         if (!userId) return;
 
         const fetchMessages = async () => {
-            const { data, error } = await supabase
-                .from('ai_messages')
-                .select('*')
-                .eq('user_id', userId)
-                .order('timestamp', { ascending: false })
-                .limit(limit);
+            try {
+                const rows = await getDocs(query(collection(db, 'ai_messages'), where('user_id', '==', userId)));
+                const data = rows.docs.map((item) => ({ id: item.id, ...item.data() }));
+                data.sort((a: any, b: any) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+                const limitedData = data.slice(0, limit);
 
-            if (error) {
-                console.error('Error fetching AI messages:', error);
-            } else {
-                // Ensure correct field mapping if necessary, otherwise use as is
-                setMessages(data.map(m => ({
+                setMessages(limitedData.map((m: any) => ({
                     id: m.id,
                     userId: m.user_id,
                     timestamp: m.timestamp,
@@ -342,6 +337,8 @@ export function useAIMessages(userId?: string, limit: number = 20) {
                     content: m.content,
                     context: m.context
                 })));
+            } catch (error) {
+                console.error('Error fetching AI messages:', error);
             }
         };
 
@@ -358,18 +355,12 @@ export function useDailyCheckins(userId?: string, limit: number = 7) {
         if (!userId) return;
 
         const fetchCheckins = async () => {
-            const { data, error } = await supabase
-                .from('daily_checkins')
-                .select('*')
-                .eq('user_id', userId)
-                .order('date', { ascending: false })
-                .limit(limit);
+            try {
+                const rows = await getDocs(query(collection(db, 'daily_checkins'), where('user_id', '==', userId)));
+                const data = rows.docs.map((item) => ({ id: item.id, ...item.data() }));
+                data.sort((a: any, b: any) => (b.date ?? 0) - (a.date ?? 0));
 
-            if (error) {
-                console.warn('Daily checkins unavailable. Did you run latest SQL setup?', error.message);
-                setCheckins([]);
-            } else {
-                setCheckins((data || []).map((row: any) => ({
+                setCheckins((data || []).slice(0, limit).map((row: any) => ({
                     id: row.id,
                     userId: row.user_id,
                     date: row.date,
@@ -387,6 +378,9 @@ export function useDailyCheckins(userId?: string, limit: number = 7) {
                     energy: row.energy,
                     notes: row.notes,
                 })));
+            } catch (error: any) {
+                console.warn('Daily checkins unavailable in Firestore:', error?.message || error);
+                setCheckins([]);
             }
         };
 
@@ -414,9 +408,8 @@ export function useLogDailyCheckin() {
         energy?: number;
         notes?: string;
     }) => {
-        const { error } = await supabase
-            .from('daily_checkins')
-            .insert([{
+        try {
+            await addDoc(collection(db, 'daily_checkins'), {
                 user_id: payload.userId,
                 date: payload.date,
                 weight: payload.weight,
@@ -432,9 +425,8 @@ export function useLogDailyCheckin() {
                 mood: payload.mood,
                 energy: payload.energy,
                 notes: payload.notes,
-            }]);
-
-        if (error) {
+            });
+        } catch (error) {
             console.error('Error saving daily checkin:', error);
             throw error;
         }
@@ -443,9 +435,8 @@ export function useLogDailyCheckin() {
 
 export function useLogEmotion() {
     return async (payload: any) => {
-        const { error } = await supabase
-            .from('emotional_logs')
-            .insert([{
+        try {
+            await addDoc(collection(db, 'emotional_logs'), {
                 user_id: payload.userId,
                 date: payload.date,
                 mood: payload.mood,
@@ -453,9 +444,8 @@ export function useLogEmotion() {
                 stress: payload.stress,
                 feeling: payload.feeling,
                 context: payload.context
-            }]);
-
-        if (error) {
+            });
+        } catch (error) {
             console.error('Error logging emotion:', error);
             throw error;
         }

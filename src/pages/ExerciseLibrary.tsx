@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, X, Dumbbell, Filter, BookOpen, ChevronRight } from 'lucide-react';
 import {
@@ -254,6 +254,45 @@ export default function ExerciseLibrary() {
         setSelectedLevel(null);
         setSelectedCategory(null);
     };
+
+    useEffect(() => {
+        const applySearch = (queryText: string) => {
+            const value = queryText.trim();
+            if (!value) return;
+            setSearch(value);
+            setSelected(null);
+            clearFilters();
+            setShowFilters(false);
+        };
+
+        const onGlobalSearch = (event: Event) => {
+            const custom = event as CustomEvent<{ query?: string; targetTab?: string }>;
+            const targetTab = custom.detail?.targetTab;
+            const queryText = custom.detail?.query;
+            if (!queryText) return;
+            if (targetTab && targetTab !== 'exercises' && targetTab !== 'workouts') return;
+            applySearch(queryText);
+        };
+
+        window.addEventListener('app:global-search', onGlobalSearch as EventListener);
+
+        try {
+            const stored = window.localStorage.getItem('app:global-search:last');
+            if (stored) {
+                const parsed = JSON.parse(stored) as { query?: string; targetTab?: string; timestamp?: number };
+                const isFresh = typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < 15000;
+                if (isFresh && parsed.query && (parsed.targetTab === 'exercises' || parsed.targetTab === 'workouts')) {
+                    applySearch(parsed.query);
+                }
+            }
+        } catch {
+            // Ignore malformed or unavailable storage.
+        }
+
+        return () => {
+            window.removeEventListener('app:global-search', onGlobalSearch as EventListener);
+        };
+    }, []);
 
     return (
         <div className="max-w-6xl mx-auto flex flex-col gap-5 p-4 lg:p-8">

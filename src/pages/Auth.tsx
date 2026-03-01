@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { supabase } from '../services/supabase';
+import {
+    createUserWithEmailAndPassword,
+    sendEmailVerification,
+    signInWithEmailAndPassword,
+    signInWithPopup,
+    signInWithRedirect,
+    updateProfile,
+} from 'firebase/auth';
+import { auth, ensureAuthPersistence, googleProvider } from '../services/firebase';
 import { Loader2, Sparkles, Mail, Lock, User, Dumbbell } from 'lucide-react';
 
 type AuthView = 'login' | 'signup';
@@ -31,11 +39,8 @@ export default function Auth() {
         setError(null);
 
         try {
-            const { error } = await supabase.auth.signInWithPassword({
-                email,
-                password,
-            });
-            if (error) throw error;
+            await ensureAuthPersistence();
+            await signInWithEmailAndPassword(auth, email, password);
         } catch (err: any) {
             setError(err.message || "Unable to sign in right now.");
         } finally {
@@ -49,17 +54,13 @@ export default function Auth() {
         setError(null);
 
         try {
-            const { error } = await supabase.auth.signUp({
-                email,
-                password,
-                options: {
-                    data: {
-                        name: fullName.trim() || undefined,
-                    },
-                },
-            });
-            if (error) throw error;
-            setError("Confirmation email sent! Please check your inbox.");
+            await ensureAuthPersistence();
+            const credential = await createUserWithEmailAndPassword(auth, email, password);
+            if (fullName.trim()) {
+                await updateProfile(credential.user, { displayName: fullName.trim() });
+            }
+            await sendEmailVerification(credential.user);
+            setError("Verification email sent! Please check your inbox.");
         } catch (err: any) {
             setError(err.message || "An error occurred during authentication.");
         } finally {
@@ -71,47 +72,46 @@ export default function Auth() {
         setLoading(true);
         setError(null);
         try {
-            const { error } = await supabase.auth.signInWithOAuth({
-                provider: 'google',
-                options: {
-                    redirectTo: window.location.origin
-                }
-            });
-            if (error) throw error;
+            await ensureAuthPersistence();
+            await signInWithPopup(auth, googleProvider);
         } catch (err: any) {
-            setError(err.message || "Failed to sign in with Google.");
-            setLoading(false);
+            try {
+                await signInWithRedirect(auth, googleProvider);
+            } catch (redirectError: any) {
+                setError(redirectError.message || err.message || "Failed to sign in with Google.");
+                setLoading(false);
+            }
         }
     };
 
     return (
-        <div className="min-h-screen w-full flex items-center justify-center bg-[#0B0C15] relative overflow-hidden">
+        <div className="min-h-screen w-full flex items-center justify-center bg-slate-100 relative overflow-hidden">
             {/* Ambient Background Mesh */}
-            <div className="fixed inset-0 z-0 bg-[radial-gradient(at_0%_0%,hsla(253,16%,7%,1)_0,transparent_50%),radial-gradient(at_50%_0%,hsla(225,39%,30%,1)_0,transparent_50%),radial-gradient(at_100%_0%,hsla(339,49%,30%,1)_0,transparent_50%)] pointer-events-none opacity-60"></div>
+            <div className="fixed inset-0 z-0 bg-[radial-gradient(at_0%_0%,#ffffff_0,transparent_50%),radial-gradient(at_50%_0%,#dbeafe_0,transparent_50%),radial-gradient(at_100%_0%,#e0e7ff_0,transparent_50%)] pointer-events-none opacity-90"></div>
 
             <div className="relative z-10 w-full max-w-md p-6">
                 <motion.div
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
-                    className="bg-white/[0.03] backdrop-blur-2xl border border-white/[0.06] rounded-[2.5rem] p-8 lg:p-10 shadow-2xl shadow-[#000000]/40"
+                    className="bg-white border border-gray-200 rounded-[2rem] p-8 lg:p-10 shadow-xl"
                 >
                     <div className="flex flex-col items-center mb-8">
-                        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#6C63FF] to-purple-600 flex items-center justify-center mb-4 shadow-lg shadow-[#6C63FF]/30">
+                        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-500 flex items-center justify-center mb-4 shadow-lg shadow-blue-500/25">
                             <Dumbbell className="text-white" size={32} />
                         </div>
-                        <h1 className="text-2xl font-black text-white text-center">
-                            Coach Arjun <span className="text-[#6C63FF]">AI</span>
+                        <h1 className="text-2xl font-black text-slate-900 text-center">
+                            Coach Arjun <span className="text-blue-600">AI</span>
                         </h1>
-                        <p className="text-slate-400 text-sm mt-1">Your journey starts here.</p>
+                        <p className="text-slate-500 text-sm mt-1">Your journey starts here.</p>
                     </div>
 
-                    <div className="mb-6 grid grid-cols-2 bg-white/5 border border-white/10 rounded-2xl p-1">
+                    <div className="mb-6 grid grid-cols-2 bg-slate-100 border border-slate-200 rounded-2xl p-1">
                         <button
                             onClick={() => {
                                 setAuthView('login');
                                 setError(null);
                             }}
-                            className={`py-2.5 rounded-xl text-sm font-semibold transition-all ${isLogin ? 'bg-[#6C63FF] text-white' : 'text-slate-400 hover:text-white'}`}
+                            className={`py-2.5 rounded-xl text-sm font-semibold transition-all ${isLogin ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-900'}`}
                         >
                             Login Page
                         </button>
@@ -120,7 +120,7 @@ export default function Auth() {
                                 setAuthView('signup');
                                 setError(null);
                             }}
-                            className={`py-2.5 rounded-xl text-sm font-semibold transition-all ${!isLogin ? 'bg-[#6C63FF] text-white' : 'text-slate-400 hover:text-white'}`}
+                            className={`py-2.5 rounded-xl text-sm font-semibold transition-all ${!isLogin ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-900'}`}
                         >
                             Sign Up Page
                         </button>
@@ -130,26 +130,26 @@ export default function Auth() {
                     <button
                         onClick={handleGoogleSignIn}
                         disabled={loading}
-                        className="w-full mb-6 py-3.5 bg-white/8 border border-white/15 rounded-xl flex items-center justify-center gap-3 text-white text-sm font-bold shadow-[8px_8px_18px_rgba(0,0,0,0.35),-6px_-6px_14px_rgba(255,255,255,0.05)] hover:bg-white/12 hover:shadow-[10px_10px_22px_rgba(0,0,0,0.38),-8px_-8px_18px_rgba(108,99,255,0.15)] transition-all group relative overflow-hidden active:scale-[0.98]"
+                        className="w-full mb-6 py-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-center gap-3 text-slate-800 text-sm font-bold shadow-sm hover:bg-slate-50 transition-all group relative overflow-hidden active:scale-[0.98]"
                     >
-                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[#6C63FF]/5 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
+                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-50 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
                         <GoogleLogo />
                         Sign in with Google
                     </button>
 
                     <div className="relative mb-6">
                         <div className="absolute inset-0 flex items-center">
-                            <div className="w-full border-t border-white/5"></div>
+                            <div className="w-full border-t border-slate-200"></div>
                         </div>
                         <div className="relative flex justify-center text-[10px] uppercase tracking-widest font-bold">
-                            <span className="bg-[#0B0C15] px-4 text-slate-500">Or continue with email</span>
+                            <span className="bg-white px-4 text-slate-500">Or continue with email</span>
                         </div>
                     </div>
 
                     <form onSubmit={isLogin ? handleLogin : handleSignup} className="space-y-4">
                         {!isLogin && (
                             <div className="space-y-1">
-                                <label className="text-[10px] font-bold text-[#6C63FF] uppercase tracking-widest px-1">Full Name</label>
+                                <label className="text-[10px] font-bold text-blue-600 uppercase tracking-widest px-1">Full Name</label>
                                 <div className="relative">
                                     <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                     <input
@@ -157,13 +157,13 @@ export default function Auth() {
                                         value={fullName}
                                         onChange={(e) => setFullName(e.target.value)}
                                         placeholder="Your full name"
-                                        className="w-full bg-white/5 border border-white/10 rounded-2xl px-12 py-3.5 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-[#6C63FF]/50 transition-all"
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-12 py-3.5 text-slate-900 text-sm placeholder-slate-400 focus:outline-none focus:border-blue-400 transition-all"
                                     />
                                 </div>
                             </div>
                         )}
                         <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-[#6C63FF] uppercase tracking-widest px-1">Email Address</label>
+                            <label className="text-[10px] font-bold text-blue-600 uppercase tracking-widest px-1">Email Address</label>
                             <div className="relative">
                                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                 <input
@@ -172,13 +172,13 @@ export default function Auth() {
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
                                     placeholder="name@example.com"
-                                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-12 py-3.5 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-[#6C63FF]/50 transition-all"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-12 py-3.5 text-slate-900 text-sm placeholder-slate-400 focus:outline-none focus:border-blue-400 transition-all"
                                 />
                             </div>
                         </div>
 
                         <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-[#6C63FF] uppercase tracking-widest px-1">Password</label>
+                            <label className="text-[10px] font-bold text-blue-600 uppercase tracking-widest px-1">Password</label>
                             <div className="relative">
                                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                 <input
@@ -187,7 +187,7 @@ export default function Auth() {
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     placeholder="••••••••"
-                                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-12 py-3.5 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-[#6C63FF]/50 transition-all"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-12 py-3.5 text-slate-900 text-sm placeholder-slate-400 focus:outline-none focus:border-blue-400 transition-all"
                                 />
                             </div>
                         </div>
@@ -201,30 +201,30 @@ export default function Auth() {
                         <button
                             type="submit"
                             disabled={loading}
-                            className="w-full py-4 bg-gradient-to-r from-[#6C63FF] to-purple-600 text-white rounded-2xl font-bold text-sm shadow-[0_0_20px_rgba(108,99,255,0.4)] hover:shadow-[0_0_30px_rgba(108,99,255,0.6)] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                            className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-2xl font-bold text-sm shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                         >
                             {loading ? <Loader2 className="animate-spin" size={20} /> : (isLogin ? "Sign In" : "Create Account")}
                         </button>
                     </form>
 
                     <div className="mt-8 text-center">
-                        <p className="text-slate-400 text-[13px]">
+                        <p className="text-slate-500 text-[13px]">
                             {isLogin ? "Don't have an account?" : "Already have an account?"}
                             <button
                                 onClick={() => {
                                     setAuthView(isLogin ? 'signup' : 'login');
                                     setError(null);
                                 }}
-                                className="ml-2 text-[#6C63FF] font-bold hover:underline"
+                                className="ml-2 text-blue-600 font-bold hover:underline"
                             >
                                 {isLogin ? "Sign Up" : "Sign In"}
                             </button>
                         </p>
                     </div>
 
-                    <div className="mt-10 pt-6 border-t border-white/5 flex items-center justify-center gap-2">
-                        <Sparkles size={14} className="text-[#6C63FF]" />
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Powered by Supabase & Gemini</span>
+                    <div className="mt-10 pt-6 border-t border-slate-200 flex items-center justify-center gap-2">
+                        <Sparkles size={14} className="text-blue-600" />
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Powered by Firebase & Gemini</span>
                     </div>
                 </motion.div>
             </div>

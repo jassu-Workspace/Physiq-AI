@@ -43,7 +43,7 @@ A cutting-edge AI-powered web application that combines personalized nutrition t
 - **Historical Data**: Complete workout and nutrition history
 
 ### 🔐 **User Authentication & Profiles**
-- **Secure Auth**: Google Sign-in via Clerk
+- **Secure Auth**: Firebase Authentication (Email/Password + Google)
 - **Detailed Onboarding**: Fitness goals, experience level, dietary preferences
 - **Custom Schedule**: Gym availability and preferences
 - **Nutrition Calculations**: BMR/TDEE and protein intake optimization
@@ -84,8 +84,8 @@ Integrated **5 premium nutrition datasets** (12,228 foods total):
 - **Lucide React** - Icon library
 
 ### **Backend & Services**
-- **Supabase** - Real-time database & authentication
-- **Clerk** - User authentication & session management
+- **Firebase Authentication** - Session and identity management
+- **Cloud Firestore** - User profile/workout/chat/check-in storage
 - **Google Gemini API** - AI coaching capabilities
 
 ### **Development Tools**
@@ -116,7 +116,7 @@ physiq-ai/
 │   │   └── ExerciseListItem.tsx       # Exercise cards
 │   ├── services/
 │   │   ├── store.ts                   # User state management
-│   │   ├── supabase.ts                # Database client
+│   │   ├── firebase.ts                # Firebase auth + Firestore client
 │   │   ├── nutritionEngine.ts         # Nutrition calculations
 │   │   └── gemini.ts                  # AI integration
 │   ├── data/
@@ -189,10 +189,79 @@ Comprehensive daily logging at the bottom of nutrition dashboard:
 
 ---
 
+## 🔥 Firebase Setup (Step-by-Step)
+
+### 1) Create Web App in Firebase Project
+- Open Firebase Console → your project → **Project settings**.
+- In **Your apps**, click **Web app** icon and register app.
+- Copy config values and put them in `.env` using `.env.example`.
+
+### 2) Enable Authentication
+- Go to **Authentication** → **Get started**.
+- Enable providers:
+  - **Email/Password**
+  - **Google**
+- In **Settings → Authorized domains**, add your local/staging/prod domains.
+
+### 3) Enable Firestore Database
+- Go to **Firestore Database** → **Create database**.
+- Choose location closest to your users for lower latency.
+- Start in production mode, then apply custom rules.
+
+### 4) Create Firestore Security Rules
+Use rules that isolate each user’s data by `user_id` or profile document id:
+
+```text
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwnerByUid(uid) { return signedIn() && request.auth.uid == uid; }
+    function hasOwnUserId() { return signedIn() && request.resource.data.user_id == request.auth.uid; }
+    function docIsOwnUserId() { return signedIn() && resource.data.user_id == request.auth.uid; }
+
+    match /profiles/{userId} {
+      allow read, create, update: if isOwnerByUid(userId);
+    }
+
+    match /workout_logs/{docId} {
+      allow create: if hasOwnUserId();
+      allow read, update, delete: if docIsOwnUserId();
+    }
+
+    match /daily_checkins/{docId} {
+      allow create: if hasOwnUserId();
+      allow read, update, delete: if docIsOwnUserId();
+    }
+
+    match /emotional_logs/{docId} {
+      allow create: if hasOwnUserId();
+      allow read, update, delete: if docIsOwnUserId();
+    }
+
+    match /ai_messages/{docId} {
+      allow create: if hasOwnUserId();
+      allow read, update, delete: if docIsOwnUserId();
+    }
+  }
+}
+```
+
+### 5) Improve Latency + Loading
+- Keep Firestore region close to users.
+- Prefer indexed point reads by user id (already used in this app).
+- Enable **Firestore Persistent Local Cache** in future iteration if you want stronger offline-first behavior.
+- Use Hosting + CDN (Firebase Hosting or equivalent) for static asset speed.
+
+### 6) Session Stability (Auto-Logout Fix)
+- App now uses `browserLocalPersistence` for Firebase Auth.
+- Keep-alive token refresh is enabled in app runtime.
+- Do not clear site storage/cookies during testing; that forces logout.
+
 ## 🔐 **Security & Privacy**
 
-- ✅ **JWT Authentication** via Clerk
-- ✅ **Row-level Security** in Supabase
+- ✅ **Firebase Authentication** with persistent sessions
+- ✅ **Firestore Rules** for per-user data isolation
 - ✅ **Encrypted API Keys** in environment variables
 - ✅ **User Data Isolation**: Each user sees only their data
 - ✅ **HTTPS Only**: Production enforcement

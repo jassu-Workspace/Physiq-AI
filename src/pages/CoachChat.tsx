@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { MessageCircle, Send, Sparkles, Clock, User, Bot, Loader2 } from 'lucide-react';
+import { MessageCircle, Send, Sparkles, Clock, User, Bot, Loader2, ChevronRight } from 'lucide-react';
 import { type UserProfile, type AIMessage, useWorkoutHistory, normalizeWorkoutLog, useAIMessages } from '../services/store';
 import { getCoachGreeting, getMotivationalMessage, explainPlanDecision } from '../services/coachAI';
 import { generateCoachMessage } from '../services/psychologyEngine';
 import { detectArchetype } from '../services/identityEngine';
-import { supabase } from '../services/supabase';
+import { addDoc, collection, doc, setDoc } from 'firebase/firestore';
+import { db } from '../services/firebase';
 
 interface CoachChatProps {
     user: UserProfile;
@@ -54,17 +55,14 @@ export default function CoachChat({ user }: CoachChatProps) {
             const history = (historyData || []).map(normalizeWorkoutLog);
             const profile = detectArchetype(user, history.filter(w => w.date >= Date.now() - 14 * 24 * 60 * 60 * 1000), messages as any, history);
             if (profile.type !== user.userType) {
-                supabase
-                    .from('profiles')
-                    .update({
+                setDoc(doc(db, 'profiles', user.id), {
                         user_type: profile.type,
                         coach_style: profile.coachStyle,
                         motivation_trigger: profile.motivationTrigger,
                         response_preference: profile.responsePreference
-                    })
-                    .eq('id', user.id)
-                    .then(({ error }) => {
-                        if (error) console.error('Error updating profile archetype:', error);
+                    }, { merge: true })
+                    .catch((error) => {
+                        console.error('Error updating profile archetype:', error);
                     });
             }
         }
@@ -125,6 +123,42 @@ export default function CoachChat({ user }: CoachChatProps) {
         };
         loadInitialMessages();
     }, [user]);
+
+    useEffect(() => {
+        const applySearch = (queryText: string) => {
+            const value = queryText.trim();
+            if (!value) return;
+            setInputValue(value);
+        };
+
+        const onGlobalSearch = (event: Event) => {
+            const custom = event as CustomEvent<{ query?: string; targetTab?: string }>;
+            const targetTab = custom.detail?.targetTab;
+            const queryText = custom.detail?.query;
+            if (!queryText) return;
+            if (targetTab && targetTab !== 'coach') return;
+            applySearch(queryText);
+        };
+
+        window.addEventListener('app:global-search', onGlobalSearch as EventListener);
+
+        try {
+            const stored = window.localStorage.getItem('app:global-search:last');
+            if (stored) {
+                const parsed = JSON.parse(stored) as { query?: string; targetTab?: string; timestamp?: number };
+                const isFresh = typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < 15000;
+                if (isFresh && parsed.query && parsed.targetTab === 'coach') {
+                    applySearch(parsed.query);
+                }
+            }
+        } catch {
+            // Ignore malformed or unavailable storage.
+        }
+
+        return () => {
+            window.removeEventListener('app:global-search', onGlobalSearch as EventListener);
+        };
+    }, []);
 
     const handleSendMessage = async (text: string) => {
         if (!text.trim() || loading) return;
@@ -203,16 +237,13 @@ export default function CoachChat({ user }: CoachChatProps) {
             };
             setMessages(prev => [...prev, aiMsg]);
 
-            // Save to Supabase
-            await supabase
-                .from('ai_messages')
-                .insert([{
+            await addDoc(collection(db, 'ai_messages'), {
                     user_id: user.id!,
                     timestamp: Date.now(),
                     type: 'plan_explanation',
                     content: response,
                     context: text,
-                }]);
+                });
         } catch {
             setMessages(prev => [...prev, {
                 id: 'error_' + Date.now(),
@@ -238,119 +269,165 @@ export default function CoachChat({ user }: CoachChatProps) {
 
     if (initialLoading) {
         return (
-            <div className="flex items-center justify-center h-full">
+            <div className="flex h-full items-center justify-center">
                 <div className="flex flex-col items-center gap-3">
-                    <Loader2 className="w-10 h-10 text-[#6C63FF] animate-spin" />
-                    <p className="text-sm text-slate-400">Coach Arjun is joining...</p>
+                    <Loader2 className="h-10 w-10 animate-spin text-blue-600" />
+                    <p className="text-sm text-slate-500">Coach Arjun is joining...</p>
                 </div>
             </div>
         );
     }
 
     return (
-        <div className="flex flex-col h-full max-w-3xl mx-auto">
-            {/* Header */}
-            <div className="p-4 lg:p-6 pb-3 border-b border-white/5">
-                <div className="flex items-center gap-4">
-                    <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${persona.color} flex items-center justify-center text-white text-lg font-bold shadow-lg`}>
-                        {persona.label[0]}
+        <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50/60">
+            <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 shadow-sm">
+                <h1 className="text-xl font-bold text-slate-900">Coach Chat</h1>
+                <div className="hidden items-center gap-3 md:flex">
+                    <div className="flex items-center rounded-lg bg-slate-100 px-3 py-2">
+                        <MessageCircle size={15} className="text-slate-400" />
+                        <input readOnly value="Search conversation..." className="w-52 border-0 bg-transparent px-2 text-sm text-slate-500 outline-none" />
                     </div>
-                    <div>
-                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                            {persona.label}
-                            <span className="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
-                        </h2>
-                        <p className="text-xs text-slate-400">{persona.subLabel}</p>
-                    </div>
-                    <div className="ml-auto flex items-center gap-2">
-                        <span className="text-[10px] bg-[#6C63FF]/10 text-[#6C63FF] px-3 py-1 rounded-full font-semibold flex items-center gap-1">
-                            <Sparkles size={10} />
-                            Identity Aware
-                        </span>
-                    </div>
+                    <div className={`flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-tr ${persona.color} text-sm font-semibold text-white`}>{user.name?.[0] || 'U'}</div>
                 </div>
-            </div>
+            </header>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4">
-                {messages.map((msg) => (
-                    <motion.div
-                        key={msg.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className={`flex gap-3 ${msg.sender === 'user' ? 'flex-row-reverse' : ''}`}
-                    >
-                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${msg.sender === 'coach'
-                            ? 'bg-[#6C63FF]/20 text-[#6C63FF]'
-                            : 'bg-white/10 text-white'
-                            }`}>
-                            {msg.sender === 'coach' ? <Bot size={14} /> : <User size={14} />}
-                        </div>
-                        <div className={`max-w-[80%] ${msg.sender === 'user' ? 'text-right' : ''}`}>
-                            <div className={`inline-block p-4 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${msg.sender === 'coach'
-                                ? 'bg-white/[0.04] border border-white/[0.06] text-slate-200'
-                                : 'bg-[#6C63FF] text-white'
-                                }`}>
-                                {msg.content}
+            <main className="relative flex flex-1 overflow-hidden">
+                <aside className="hidden w-80 flex-col border-r border-slate-200 bg-white lg:flex">
+                    <div className="border-b border-slate-100 p-5">
+                        <div className="mb-3 flex items-center gap-3">
+                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
+                                <Bot size={20} />
                             </div>
-                            <p className="text-[10px] text-slate-600 mt-1 px-1">
-                                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </p>
-                        </div>
-                    </motion.div>
-                ))}
-
-                {loading && (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
-                        <div className="w-8 h-8 rounded-xl bg-[#6C63FF]/20 flex items-center justify-center">
-                            <Bot size={14} className="text-[#6C63FF]" />
-                        </div>
-                        <div className="bg-white/[0.04] border border-white/[0.06] rounded-2xl p-4">
-                            <div className="flex gap-1">
-                                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                            <div>
+                                <h2 className="font-bold text-slate-900">Coach Arjun AI</h2>
+                                <span className="flex items-center gap-1 text-xs font-medium text-green-600">
+                                    <span className="h-2 w-2 rounded-full bg-green-500" /> Online & Ready
+                                </span>
                             </div>
                         </div>
-                    </motion.div>
-                )}
+                        <p className="text-sm text-slate-500">Your personal AI fitness strategist. Ask about routine, diet, and recovery.</p>
+                    </div>
 
-                <div ref={messagesEndRef} />
-            </div>
+                    <div className="flex-1 space-y-2 overflow-y-auto p-4">
+                        <h3 className="px-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Quick Actions</h3>
+                        {quickQuestions.map((q) => (
+                            <button
+                                key={q}
+                                onClick={() => handleSendMessage(q)}
+                                className="flex w-full items-center justify-between rounded-xl border border-transparent p-3 text-left transition hover:border-slate-200 hover:bg-slate-50"
+                            >
+                                <span className="text-sm font-medium text-slate-700">{q}</span>
+                                <ChevronRight size={14} className="text-slate-400" />
+                            </button>
+                        ))}
 
-            {/* Quick Actions */}
-            <div className="px-4 lg:px-6 py-2 flex gap-2 overflow-x-auto scrollbar-hide">
-                {quickQuestions.map((q, i) => (
-                    <button
-                        key={i}
-                        onClick={() => handleSendMessage(q)}
-                        className="shrink-0 text-xs bg-white/5 border border-white/10 text-slate-300 px-3 py-2 rounded-xl hover:bg-[#6C63FF]/10 hover:border-[#6C63FF]/30 hover:text-white transition-all"
-                    >
-                        {q}
-                    </button>
-                ))}
-            </div>
+                        <div className="mt-5 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 p-4 text-white shadow-lg shadow-blue-500/20">
+                            <div className="mb-2 flex items-center justify-between">
+                                <TrendingUpMini />
+                                <span className="rounded bg-white/20 px-2 py-1 text-xs font-medium">Goal</span>
+                            </div>
+                            <h4 className="text-lg font-bold">Weekly Target</h4>
+                            <p className="mb-3 text-sm text-blue-100">Stay consistent this week and keep momentum high.</p>
+                            <div className="h-1.5 w-full rounded-full bg-black/20">
+                                <div className="h-1.5 w-[85%] rounded-full bg-white" />
+                            </div>
+                        </div>
+                    </div>
+                </aside>
 
-            {/* Input */}
-            <div className="p-4 lg:p-6 pt-3 border-t border-white/5">
-                <div className="flex gap-3">
-                    <input
-                        type="text"
-                        value={inputValue}
-                        onChange={e => setInputValue(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleSendMessage(inputValue)}
-                        placeholder="Ask Coach Arjun anything..."
-                        className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-[#6C63FF]/50 transition-all"
-                    />
-                    <button
-                        onClick={() => handleSendMessage(inputValue)}
-                        disabled={!inputValue.trim() || loading}
-                        className="w-12 h-12 rounded-2xl bg-[#6C63FF] text-white flex items-center justify-center shadow-[0_0_20px_rgba(108,99,255,0.4)] hover:shadow-[0_0_30px_rgba(108,99,255,0.6)] transition-all disabled:opacity-30 disabled:shadow-none"
-                    >
-                        <Send size={18} />
-                    </button>
-                </div>
-            </div>
+                <section className="relative flex min-w-0 flex-1 flex-col">
+                    <div className="chat-scroll flex-1 space-y-5 overflow-y-auto p-4 md:p-6 pb-36">
+                        <div className="flex justify-center">
+                            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-400">Today</span>
+                        </div>
+
+                        {messages.map((msg) => (
+                            <motion.div
+                                key={msg.id}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className={`flex gap-3 ${msg.sender === 'user' ? 'flex-row-reverse' : ''}`}
+                            >
+                                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${msg.sender === 'coach' ? 'bg-white border border-slate-200 text-blue-600' : `bg-gradient-to-tr ${persona.color} text-white`}`}>
+                                    {msg.sender === 'coach' ? <Bot size={16} /> : <User size={15} />}
+                                </div>
+
+                                <div className={`max-w-[80%] ${msg.sender === 'user' ? 'text-right' : ''}`}>
+                                    <div className={`inline-block rounded-2xl p-4 text-sm leading-relaxed whitespace-pre-wrap ${msg.sender === 'coach' ? 'rounded-tl-none border border-slate-200 bg-white text-slate-700 shadow-sm' : 'rounded-tr-none bg-blue-600 text-white shadow-md shadow-blue-500/20'}`}>
+                                        {msg.content}
+                                    </div>
+                                    <p className="mt-1 px-1 text-[10px] text-slate-400">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                </div>
+                            </motion.div>
+                        ))}
+
+                        {loading && (
+                            <div className="flex gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-blue-600">
+                                    <Bot size={16} />
+                                </div>
+                                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="flex gap-1">
+                                        <div className="h-2 w-2 animate-bounce rounded-full bg-slate-400" />
+                                        <div className="h-2 w-2 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '150ms' }} />
+                                        <div className="h-2 w-2 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '300ms' }} />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent px-4 pb-4 pt-8 md:px-6 md:pb-6">
+                        <div className="mx-auto w-full max-w-4xl">
+                            <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
+                                {quickQuestions.slice(0, 3).map((q) => (
+                                    <button key={q} onClick={() => handleSendMessage(q)} className="whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm hover:border-blue-300 hover:text-blue-600">
+                                        {q}
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
+                                <button className="rounded-xl p-2 text-slate-400 hover:bg-slate-50 hover:text-blue-600">
+                                    <Sparkles size={18} />
+                                </button>
+                                <textarea
+                                    value={inputValue}
+                                    onChange={(e) => setInputValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            void handleSendMessage(inputValue);
+                                        }
+                                    }}
+                                    placeholder="Ask Coach Arjun anything..."
+                                    rows={1}
+                                    className="max-h-32 min-h-[44px] flex-1 resize-none border-0 bg-transparent px-2 py-2 text-sm text-slate-700 outline-none"
+                                />
+                                <button
+                                    onClick={() => handleSendMessage(inputValue)}
+                                    disabled={!inputValue.trim() || loading}
+                                    className="rounded-xl bg-blue-600 p-2 text-white shadow-md shadow-blue-500/20 hover:bg-blue-700 disabled:opacity-40"
+                                >
+                                    <Send size={18} />
+                                </button>
+                            </div>
+                            <p className="mt-2 text-center text-[10px] text-slate-400">Coach Arjun AI can make mistakes. Consider checking important health info.</p>
+                        </div>
+                    </div>
+                </section>
+            </main>
         </div>
+    );
+}
+
+function TrendingUpMini() {
+    return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="text-white/80">
+            <path d="M4 16L10 10L14 14L20 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M16 8H20V12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
     );
 }

@@ -7,12 +7,21 @@ import {
 } from 'lucide-react';
 import { type UserProfile, type WorkoutLog, normalizeWorkoutLog, useWorkoutHistory } from '../services/store';
 import { generateWorkout, getMuscleRecoveryScores, getOvertrainingWarnings, getSetPrescriptionsForExercise } from '../services/workoutEngine';
-import { supabase } from '../services/supabase';
+import { addDoc, collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import { useExerciseDB, findMatchingFreeExercise, getExerciseImageUrl, type FreeExercise } from '../services/exerciseDB';
 import { ExerciseCard, ExerciseDetail, MUSCLE_LABEL, LEVEL_COLOR } from './ExerciseLibrary';
 
 interface WorkoutPlanProps {
     user: UserProfile;
+}
+
+function getLocalDateKey(timestamp: number): string {
+    const date = new Date(timestamp);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
 // ─── Workout category definitions ──────────────────────────────────────────
@@ -231,6 +240,123 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
     const [suppCompletedSets, setSuppCompletedSets] = useState<Record<string, boolean[]>>({});
     const [suppWeights, setSuppWeights] = useState<Record<string, number>>({});
     const [expandedSupp, setExpandedSupp] = useState<string | null>(null);
+    const [hydrationDocId, setHydrationDocId] = useState<string | null>(null);
+    const [hydrationMl, setHydrationMl] = useState(0);
+    const hydrationGoalMl = Math.max(1000, (user.waterIntakeGoal || 3) * 1000);
+    const hydrationPct = Math.min(100, Math.round((hydrationMl / hydrationGoalMl) * 100));
+
+    React.useEffect(() => {
+        const loadHydration = async () => {
+            if (!user.id) return;
+            const dateKey = getLocalDateKey(Date.now());
+
+            try {
+                const rows = await getDocs(query(
+                    collection(db, 'daily_checkins'),
+                    where('user_id', '==', user.id),
+                    where('date_key', '==', dateKey)
+                ));
+
+                if (rows.empty) {
+                    setHydrationDocId(null);
+                    setHydrationMl(0);
+                    return;
+                }
+
+                const first = rows.docs[0];
+                setHydrationDocId(first.id);
+                setHydrationMl(Number(first.data().hydration_ml ?? first.data().total_ml ?? 0));
+            } catch (error) {
+                console.error('Failed to load hydration:', error);
+            }
+        };
+
+        void loadHydration();
+    }, [user.id]);
+
+    React.useEffect(() => {
+        const applySearch = (queryText: string) => {
+            const value = queryText.trim().toLowerCase();
+            if (!value) return;
+
+            setActiveTab('browse');
+
+            if (freeExercises.length === 0) return;
+            const matched = freeExercises.find((exercise) => {
+                const nameMatch = exercise.name.toLowerCase().includes(value);
+                const muscleMatch = exercise.primaryMuscles.some((muscle) => muscle.toLowerCase().includes(value));
+                const equipmentMatch = (exercise.equipment ?? '').toLowerCase().includes(value);
+                return nameMatch || muscleMatch || equipmentMatch;
+            });
+
+            if (matched) {
+                setDetailEx(matched);
+            }
+        };
+
+        const onGlobalSearch = (event: Event) => {
+            const custom = event as CustomEvent<{ query?: string; targetTab?: string }>;
+            const targetTab = custom.detail?.targetTab;
+            const queryText = custom.detail?.query;
+            if (!queryText) return;
+            if (targetTab && targetTab !== 'workouts' && targetTab !== 'exercises') return;
+            applySearch(queryText);
+        };
+
+        window.addEventListener('app:global-search', onGlobalSearch as EventListener);
+
+        try {
+            const stored = window.localStorage.getItem('app:global-search:last');
+            if (stored) {
+                const parsed = JSON.parse(stored) as { query?: string; targetTab?: string; timestamp?: number };
+                const isFresh = typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp < 15000;
+                if (isFresh && parsed.query && (parsed.targetTab === 'workouts' || parsed.targetTab === 'exercises')) {
+                    applySearch(parsed.query);
+                }
+            }
+        } catch {
+            // Ignore malformed or unavailable storage.
+        }
+
+        return () => {
+            window.removeEventListener('app:global-search', onGlobalSearch as EventListener);
+        };
+    }, [freeExercises]);
+
+    const updateHydration = async (deltaMl: number) => {
+        if (!user.id) return;
+        const nextMl = Math.max(0, hydrationMl + deltaMl);
+        const now = Date.now();
+        const dateKey = getLocalDateKey(now);
+
+        try {
+            if (hydrationDocId) {
+                await setDoc(doc(db, 'daily_checkins', hydrationDocId), {
+                    hydration_ml: nextMl,
+                    total_ml: nextMl,
+                    hydration_goal_ml: hydrationGoalMl,
+                    updated_at: now,
+                }, { merge: true });
+            } else {
+                const createdRef = doc(collection(db, 'daily_checkins'));
+                await setDoc(createdRef, {
+                    user_id: user.id,
+                    date_key: dateKey,
+                    date: now,
+                    hydration_ml: nextMl,
+                    total_ml: nextMl,
+                    hydration_goal_ml: hydrationGoalMl,
+                    created_at: now,
+                    updated_at: now,
+                });
+                setHydrationDocId(createdRef.id);
+            }
+
+            setHydrationMl(nextMl);
+        } catch (error) {
+            console.error('Failed to update hydration:', error);
+        }
+    };
 
     const setPlans = useMemo(() =>
         workout.exercises.map(ex => getSetPrescriptionsForExercise(user, ex, history)),
@@ -297,7 +423,7 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
             })),
         }));
         try {
-            const { error } = await supabase.from('workout_logs').insert([{
+            await addDoc(collection(db, 'workout_logs'), {
                 user_id: user.id,
                 date: Date.now(),
                 split_day: workout.splitDay,
@@ -309,8 +435,7 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                 notes: '',
                 duration: workout.estimatedDuration,
                 completed: true,
-            }]);
-            if (error) throw error;
+            });
             setWorkoutComplete(true);
         } catch (e) {
             console.error('Failed to log workout:', e);
@@ -374,19 +499,19 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
 
     // ─────────────────────────────────────────────────────────────────────────
     return (
-        <div className="max-w-4xl mx-auto flex flex-col gap-5 p-4 lg:p-8">
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 lg:p-8">
 
             {/* Header */}
             <div>
-                <h1 className="text-3xl lg:text-4xl font-extrabold text-white flex items-center gap-3">
-                    <Dumbbell className="text-[#6C63FF]" size={32} />
+                <h1 className="text-3xl lg:text-4xl font-extrabold text-slate-900 flex items-center gap-3">
+                    <Dumbbell className="text-blue-600" size={32} />
                     Workouts
                 </h1>
-                <p className="text-slate-400 mt-1 text-sm">{workout.focus}</p>
+                <p className="text-slate-500 mt-1 text-sm">{workout.focus}</p>
             </div>
 
             {/* Tab switcher */}
-            <div className="flex bg-white/[0.03] border border-white/[0.06] rounded-xl p-1 gap-1">
+            <div className="flex rounded-xl border border-slate-200 bg-white p-1 gap-1 shadow-sm">
                 {([
                     { id: 'today', label: "Today's Workout", icon: <Flame size={14} /> },
                     { id: 'browse', label: 'Browse by Category', icon: <Activity size={14} /> },
@@ -395,8 +520,8 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id)}
                         className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.id
-                            ? 'bg-[#6C63FF] text-white shadow-lg shadow-[#6C63FF]/30'
-                            : 'text-slate-400 hover:text-white'}`}
+                                ? 'bg-blue-600 text-white shadow-sm'
+                                : 'text-slate-500 hover:text-slate-900'}`}
                     >
                         {tab.icon}
                         <span>{tab.label}</span>
@@ -408,7 +533,7 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
             {activeTab === 'today' && (
                 <>
                     {/* Workout meta row */}
-                    <div className="flex items-center gap-3 text-xs text-slate-400 flex-wrap">
+                    <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
                         <span className="flex items-center gap-1"><Clock size={12} /> {workout.estimatedDuration} min</span>
                         <span className="flex items-center gap-1"><Dumbbell size={12} /> {workout.exercises.length} exercises</span>
                         <span className={`px-2 py-1 rounded-full ${workout.intensity === 'intense' ? 'bg-red-500/10 text-red-400' :
@@ -417,9 +542,51 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                         </span>
                     </div>
 
+                    <div className="rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-500 to-blue-600 p-5 text-white shadow-lg shadow-blue-500/20">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-lg font-bold">Hydration</h3>
+                                <p className="text-sm text-blue-100">Daily Goal: {hydrationGoalMl} ml</p>
+                            </div>
+                            <div className="rounded-lg bg-white/20 p-2">
+                                <Zap size={16} />
+                            </div>
+                        </div>
+
+                        <div className="mb-3 flex items-end gap-2">
+                            <span className="text-4xl font-bold">{hydrationMl}</span>
+                            <span className="mb-1 text-blue-100">ml consumed</span>
+                        </div>
+
+                        <div className="mb-4 h-2 w-full rounded-full bg-blue-800/30">
+                            <div className="h-2 rounded-full bg-white" style={{ width: `${hydrationPct}%` }} />
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                            <button
+                                onClick={() => void updateHydration(250)}
+                                className="rounded-lg bg-white/20 py-2 text-xs font-semibold hover:bg-white/30"
+                            >
+                                +250ml
+                            </button>
+                            <button
+                                onClick={() => void updateHydration(500)}
+                                className="rounded-lg bg-white/20 py-2 text-xs font-semibold hover:bg-white/30"
+                            >
+                                +500ml
+                            </button>
+                            <button
+                                onClick={() => void updateHydration(-250)}
+                                className="rounded-lg bg-white/20 py-2 text-xs font-semibold hover:bg-white/30"
+                            >
+                                -250ml
+                            </button>
+                        </div>
+                    </div>
+
                     {/* Overtraining warnings */}
                     {warnings.length > 0 && (
-                        <div className="bg-orange-500/5 border border-orange-500/20 rounded-2xl p-4">
+                        <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4">
                             <div className="flex items-center gap-2 mb-2 text-orange-400">
                                 <AlertTriangle size={16} />
                                 <span className="text-sm font-semibold">Overtraining Alerts</span>
@@ -432,11 +599,11 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                     {workoutStarted && (
                         <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-4">
                             <div className="flex justify-between items-center mb-2">
-                                <span className="text-sm font-semibold text-white">Workout Progress</span>
-                                <span className="text-sm font-bold text-[#6C63FF]">{progress}%</span>
+                                <span className="text-sm font-semibold text-slate-900">Workout Progress</span>
+                                <span className="text-sm font-bold text-blue-600">{progress}%</span>
                             </div>
                             <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
-                                <motion.div className="h-full bg-gradient-to-r from-[#6C63FF] to-purple-500 rounded-full"
+                                <motion.div className="h-full rounded-full bg-blue-600"
                                     animate={{ width: `${progress}%` }} transition={{ duration: 0.3 }} />
                             </div>
                             <p className="text-xs text-slate-500 mt-1">{completedCount} of {totalSets} sets</p>
@@ -444,16 +611,16 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                     )}
 
                     {/* Recovery status */}
-                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-4">
-                        <h3 className="text-xs font-bold text-white mb-3 uppercase tracking-wide">Muscle Recovery Status</h3>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <h3 className="text-xs font-bold text-slate-900 mb-3 uppercase tracking-wide">Muscle Recovery Status</h3>
                         <div className="flex flex-wrap gap-2">
                             {workout.muscleGroups.map(muscle => {
                                 const score = recoveryScores[muscle] || 100;
                                 const color = score >= 80 ? 'bg-green-400' : score >= 50 ? 'bg-yellow-400' : 'bg-red-400';
                                 return (
-                                    <div key={muscle} className="flex items-center gap-2 bg-white/[0.03] px-3 py-1.5 rounded-xl">
+                                    <div key={muscle} className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-1.5 border border-slate-200">
                                         <div className={`w-2 h-2 rounded-full ${color}`} />
-                                        <span className="text-xs font-medium text-slate-300 capitalize">{muscle}</span>
+                                        <span className="text-xs font-medium text-slate-700 capitalize">{muscle}</span>
                                         <span className="text-[10px] text-slate-500">{score}%</span>
                                     </div>
                                 );
@@ -499,7 +666,7 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
 
                                             return (
                                                 <motion.div key={idx} layout
-                                                    className={`border rounded-2xl overflow-hidden transition-all ${allDone ? 'border-green-500/30 bg-green-500/[0.02]' : 'bg-white/[0.03] border-white/[0.06]'}`}
+                                                    className={`border rounded-2xl overflow-hidden transition-all ${allDone ? 'border-green-200 bg-green-50' : 'bg-white border-slate-200 shadow-sm'}`}
                                                 >
                                                     <button
                                                         onClick={() => setExpandedExercise(isExpanded ? null : idx)}
@@ -520,11 +687,11 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                                                             </div>
                                                         )}
                                                         <div className="flex-1 min-w-0">
-                                                            <p className={`text-sm font-semibold truncate ${allDone ? 'text-green-400' : 'text-white'}`}>{ex.exercise.name}</p>
+                                                            <p className={`text-sm font-semibold truncate ${allDone ? 'text-green-700' : 'text-slate-900'}`}>{ex.exercise.name}</p>
                                                             <p className="text-xs text-slate-500 capitalize">{ex.exercise.equipment}</p>
                                                         </div>
                                                         <div className="text-right mr-1 shrink-0">
-                                                            <p className="text-sm font-bold text-white">{ex.sets} × {ex.reps}</p>
+                                                            <p className="text-sm font-bold text-slate-900">{ex.sets} × {ex.reps}</p>
                                                             <p className="text-[10px] text-slate-500">{ex.restSeconds}s rest</p>
                                                         </div>
                                                         {isExpanded ? <ChevronUp size={15} className="text-slate-400 shrink-0" /> : <ChevronDown size={15} className="text-slate-400 shrink-0" />}

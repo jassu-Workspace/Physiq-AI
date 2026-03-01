@@ -8,9 +8,10 @@ import {
 import {
     type UserProfile, type WeeklySchedule, type DaySchedule, type WorkoutSession,
     type SupplementProfile, type DayName,
-    createEmptySchedule, createDefaultSupplements, generateSessionLabel, countTrainingDays
+    createEmptySchedule, createDefaultSupplements, generateSessionLabel, countTrainingDays, normalizeUserProfile
 } from '../services/store';
-import { supabase } from '../services/supabase';
+import { doc, setDoc } from 'firebase/firestore';
+import { auth, db } from '../services/firebase';
 import { type MuscleGroup } from '../data/exercises';
 
 interface OnboardingProps {
@@ -167,7 +168,7 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
         setIsSubmitting(true);
 
         try {
-            const { data: { user: authUser } } = await supabase.auth.getUser();
+            const authUser = auth.currentUser;
             if (!authUser) {
                 setSubmitError('Your session expired. Please sign in again.');
                 return;
@@ -185,7 +186,7 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
             const finalSchedule = countTrainingDays(schedule) > 0 ? schedule : defaultSchedule;
 
             const profileData = {
-                id: authUser.id,
+                id: authUser.uid,
                 name: name || 'Athlete',
                 age,
                 gender,
@@ -224,18 +225,10 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
 
             console.log('Upserting profile:', JSON.stringify(profileData, null, 2));
 
-            const { data, error } = await supabase
-                .from('profiles')
-                .upsert(profileData, { onConflict: 'id' })
-                .select();
+            await setDoc(doc(db, 'profiles', authUser.uid), profileData, { merge: true });
 
-            if (error) {
-                console.error('Supabase error details:', error);
-                throw new Error(`Supabase error: ${error.message}`);
-            }
-
-            console.log('Profile saved successfully:', data);
-            onComplete(profileData as any as UserProfile);
+            console.log('Profile saved successfully');
+            onComplete(normalizeUserProfile(profileData));
         } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
             console.error("Failed to complete onboarding:", errorMsg);
@@ -985,8 +978,8 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
                             {/* STEP 7: Review & Confirm */}
                             {step === 7 && (
                                 <>
-                                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-5 space-y-4">
-                                        <h3 className="text-sm font-bold text-[#6C63FF]">Your Profile</h3>
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
+                                        <h3 className="text-sm font-bold text-slate-900">Your Profile</h3>
                                         <div className="grid grid-cols-2 gap-3 text-xs">
                                             <div><span className="text-slate-500">Name</span><p className="text-white font-semibold">{name || 'Athlete'}</p></div>
                                             <div><span className="text-slate-500">Age</span><p className="text-white font-semibold">{age}</p></div>
@@ -998,8 +991,8 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
                                         </div>
                                     </div>
 
-                                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-5">
-                                        <h3 className="text-sm font-bold text-[#6C63FF] mb-3">Weekly Schedule</h3>
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                                        <h3 className="text-sm font-bold text-slate-900 mb-3">Weekly Schedule</h3>
                                         <div className="space-y-2">
                                             {DAY_NAMES.map(d => {
                                                 const day = schedule[d.key];
@@ -1011,7 +1004,7 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
                                                         ) : (
                                                             <div className="flex flex-wrap gap-1">
                                                                 {day.sessions.map((s, i) => (
-                                                                    <span key={i} className="bg-[#6C63FF]/10 text-[#6C63FF] px-2 py-1 rounded-lg text-[10px] font-medium">
+                                                                    <span key={i} className="bg-slate-100 text-slate-700 px-2 py-1 rounded-lg text-[10px] font-medium">
                                                                         {s.timeSlot === 'morning' ? '🌅' : s.timeSlot === 'afternoon' ? '☀️' : '🌙'} {s.label}
                                                                     </span>
                                                                 ))}
@@ -1024,8 +1017,8 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
                                         <p className="text-[10px] text-slate-500 mt-3">{countTrainingDays(schedule)} training days/week</p>
                                     </div>
 
-                                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl p-5">
-                                        <h3 className="text-sm font-bold text-[#6C63FF] mb-2">Nutrition & Supplements</h3>
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                                        <h3 className="text-sm font-bold text-slate-900 mb-2">Nutrition & Supplements</h3>
                                         <div className="text-xs space-y-1.5 text-slate-300">
                                             <p>🍽️ {mealsPerDay} meals/day • {dietType.replace('_', '-')} • {city}</p>
                                             <p>💧 {waterGoal}L water/day</p>
@@ -1066,8 +1059,8 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
                         onClick={step === TOTAL_STEPS - 1 ? handleComplete : next}
                         disabled={!canAdvance() || isSubmitting}
                         className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl text-sm font-bold transition-all ${canAdvance() && !isSubmitting
-                            ? 'bg-gradient-to-r from-[#6C63FF] to-purple-500 text-white shadow-[0_0_25px_rgba(108,99,255,0.4)] hover:shadow-[0_0_35px_rgba(108,99,255,0.6)]'
-                            : 'bg-white/5 text-slate-600 cursor-not-allowed'}`}>
+                            ? 'bg-slate-900 text-white border border-slate-900 hover:bg-slate-800 shadow-sm'
+                            : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'}`}>
                         {isSubmitting ? (
                             <>Saving profile...</>
                         ) : step === TOTAL_STEPS - 1 ? (
