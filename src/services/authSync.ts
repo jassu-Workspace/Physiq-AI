@@ -1,6 +1,4 @@
-import { type User } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from './firebase';
+import { type User, db, doc, setDoc } from './firebase';
 
 function getDisplayName(user: User): string {
     const displayName = typeof user.displayName === 'string' ? user.displayName.trim() : '';

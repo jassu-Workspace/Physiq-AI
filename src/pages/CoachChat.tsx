@@ -5,8 +5,7 @@ import { type UserProfile, type AIMessage, useWorkoutHistory, normalizeWorkoutLo
 import { getCoachGreeting, getMotivationalMessage, explainPlanDecision } from '../services/coachAI';
 import { generateCoachMessage } from '../services/psychologyEngine';
 import { detectArchetype } from '../services/identityEngine';
-import { addDoc, collection, doc, setDoc } from 'firebase/firestore';
-import { db } from '../services/firebase';
+import { addDoc, collection, db, doc, setDoc } from '../services/firebase';
 
 interface CoachChatProps {
     user: UserProfile;

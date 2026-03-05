@@ -1,186 +1,187 @@
--- SUPABASE DATABASE SETUP SCRIPT
--- This script replaces the Convex schema with PostgreSQL tables and security policies.
+-- Physiq-AI Supabase schema (run in Supabase SQL editor)
+-- This script is idempotent and aligned with current app writes/reads.
 
--- 1. CLEAR PREVIOUS DATA (Optional cleanup)
--- WARNING: This will delete all data if you've already started using Supabase.
--- Un-comment the lines below to reset the database.
--- DROP TABLE IF EXISTS monthly_progress CASCADE;
--- DROP TABLE IF EXISTS ai_messages CASCADE;
--- DROP TABLE IF EXISTS diet_plans CASCADE;
--- DROP TABLE IF EXISTS emotional_logs CASCADE;
--- DROP TABLE IF EXISTS personal_memory CASCADE;
--- DROP TABLE IF EXISTS workout_logs CASCADE;
--- DROP TABLE IF EXISTS profiles CASCADE;
+create extension if not exists pgcrypto;
 
--- 2. CREATE PROFILES TABLE (Extends Supabase Auth)
-CREATE TABLE profiles (
-    id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
-    name TEXT NOT NULL,
-    age INTEGER,
-    gender TEXT CHECK (gender IN ('male', 'female', 'other')),
-    gym_experience TEXT CHECK (gym_experience IN ('newbie', 'casual', 'consistent', 'veteran')),
-    weight FLOAT,
-    height FLOAT,
-    body_fat FLOAT,
-    fitness_level TEXT CHECK (fitness_level IN ('beginner', 'intermediate', 'advanced')),
-    goal TEXT CHECK (goal IN ('muscle_gain', 'fat_loss', 'strength', 'maintenance', 'endurance')),
-    training_style TEXT CHECK (training_style IN ('bodybuilding', 'powerlifting', 'functional', 'calisthenics', 'mixed')),
-    custom_schedule JSONB,
-    days_per_week INTEGER,
-    diet_type TEXT CHECK (diet_type IN ('vegetarian', 'non_vegetarian', 'vegan', 'eggetarian')),
-    meals_per_day INTEGER,
-    city TEXT,
-    supplements JSONB,
-    wake_up_time TEXT,
-    sleep_time TEXT,
-    water_intake_goal FLOAT,
-    user_type TEXT DEFAULT 'unknown',
-    coach_style TEXT DEFAULT 'supportive',
-    motivation_trigger TEXT DEFAULT 'consistency',
-    response_preference TEXT DEFAULT 'medium',
-    psych_state JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+create table if not exists profiles (
+    id uuid primary key references auth.users(id) on delete cascade,
+    name text,
+    age int,
+    gender text,
+    weight double precision,
+    height double precision,
+    body_fat double precision,
+    gym_experience text,
+    fitness_level text,
+    goal text,
+    training_style text,
+    custom_schedule jsonb,
+    days_per_week int,
+    diet_type text,
+    meals_per_day int,
+    city text,
+    supplements jsonb,
+    wake_up_time text,
+    sleep_time text,
+    water_intake_goal double precision,
+    user_type text default 'unknown',
+    coach_style text default 'supportive',
+    motivation_trigger text default 'consistency',
+    response_preference text default 'medium',
+    psych_state jsonb,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now()
 );
 
--- 3. CREATE WORKOUT LOGS TABLE
-CREATE TABLE workout_logs (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    date BIGINT NOT NULL,
-    split_day TEXT,
-    session_index INTEGER,
-    exercises JSONB, -- Array of LoggedExercise
-    mood_before INTEGER,
-    mood_after INTEGER,
-    energy_level INTEGER,
-    notes TEXT,
-    duration INTEGER,
-    completed BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+create table if not exists workout_logs (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references auth.users(id) on delete cascade,
+    date bigint not null,
+    split_day text,
+    session_index int,
+    exercises jsonb,
+    mood_before int,
+    mood_after int,
+    energy_level int,
+    notes text,
+    duration int,
+    completed boolean default true,
+    created_at timestamptz default now()
 );
 
--- 4. CREATE PERSONAL MEMORY TABLE
-CREATE TABLE personal_memory (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    type TEXT NOT NULL,
-    key TEXT,
-    value JSONB,
-    date BIGINT,
-    narrative TEXT
+create table if not exists emotional_logs (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references auth.users(id) on delete cascade,
+    date bigint not null,
+    mood int,
+    energy int,
+    stress int,
+    feeling text,
+    context text,
+    created_at timestamptz default now()
 );
 
--- 5. CREATE EMOTIONAL LOGS TABLE
-CREATE TABLE emotional_logs (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    date BIGINT NOT NULL,
-    mood INTEGER,
-    energy INTEGER,
-    stress INTEGER,
-    feeling TEXT,
-    context TEXT
+create table if not exists ai_messages (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references auth.users(id) on delete cascade,
+    timestamp bigint not null,
+    type text,
+    content text,
+    context text,
+    created_at timestamptz default now()
 );
 
--- 6. CREATE DIET PLANS TABLE
-CREATE TABLE diet_plans (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    date BIGINT NOT NULL,
-    target_calories INTEGER,
-    target_protein INTEGER,
-    target_carbs INTEGER,
-    target_fats INTEGER,
-    supplement_protein INTEGER,
-    food_protein_target INTEGER,
-    carb_cycle_day TEXT,
-    meals JSONB
+create table if not exists daily_checkins (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references auth.users(id) on delete cascade,
+    date bigint not null,
+    date_key text,
+    weight double precision,
+    height double precision,
+    gym_timing text,
+    planned_meals text,
+    eaten_meals text,
+    supplements_taken text,
+    pre_workout_meal text,
+    distance_home_to_gym_km double precision,
+    distance_gym_to_home_km double precision,
+    transport_mode text,
+    mood int,
+    energy int,
+    hydration_ml int,
+    total_ml int,
+    hydration_goal_ml int,
+    notes text,
+    created_at bigint,
+    updated_at bigint
 );
 
--- 7. CREATE AI MESSAGES TABLE
-CREATE TABLE ai_messages (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    timestamp BIGINT NOT NULL,
-    type TEXT,
-    content TEXT,
-    context TEXT
+create table if not exists food_intake_logs (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references auth.users(id) on delete cascade,
+    food_id text,
+    name text,
+    quantity_units int,
+    unit_grams int,
+    calories int,
+    protein int,
+    carbs int,
+    fats int,
+    created_at bigint,
+    date_key text,
+    target_calories int,
+    target_protein int,
+    target_carbs int,
+    target_fats int,
+    expires_at bigint
 );
 
--- 8. CREATE MONTHLY PROGRESS TABLE
-CREATE TABLE monthly_progress (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    month INTEGER NOT NULL,
-    consistency_score INTEGER,
-    total_workouts INTEGER,
-    planned_workouts INTEGER,
-    total_volume FLOAT,
-    avg_mood FLOAT,
-    weight_change FLOAT,
-    coach_insight TEXT,
-    narrative TEXT
-);
+create index if not exists idx_workout_logs_user_date on workout_logs(user_id, date desc);
+create index if not exists idx_emotional_logs_user_date on emotional_logs(user_id, date desc);
+create index if not exists idx_ai_messages_user_ts on ai_messages(user_id, timestamp desc);
+create index if not exists idx_daily_checkins_user_date on daily_checkins(user_id, date desc);
+create index if not exists idx_daily_checkins_user_date_key on daily_checkins(user_id, date_key);
+create index if not exists idx_food_logs_user_created on food_intake_logs(user_id, created_at desc);
+create index if not exists idx_food_logs_user_date_key on food_intake_logs(user_id, date_key);
+create index if not exists idx_food_logs_expires_at on food_intake_logs(expires_at);
 
--- 8b. CREATE DAILY CHECKINS TABLE (personalized daily planning)
-CREATE TABLE daily_checkins (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
-    date BIGINT NOT NULL,
-    weight FLOAT,
-    height FLOAT,
-    gym_timing TEXT,
-    planned_meals TEXT,
-    eaten_meals TEXT,
-    supplements_taken TEXT,
-    pre_workout_meal TEXT,
-    distance_home_to_gym_km FLOAT,
-    distance_gym_to_home_km FLOAT,
-    transport_mode TEXT,
-    mood INTEGER,
-    energy INTEGER,
-    notes TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
-);
+alter table profiles enable row level security;
+alter table workout_logs enable row level security;
+alter table emotional_logs enable row level security;
+alter table ai_messages enable row level security;
+alter table daily_checkins enable row level security;
+alter table food_intake_logs enable row level security;
 
--- 9. SETUP ROW LEVEL SECURITY (RLS)
--- Enable RLS on all tables
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workout_logs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE personal_memory ENABLE ROW LEVEL SECURITY;
-ALTER TABLE emotional_logs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE diet_plans ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ai_messages ENABLE ROW LEVEL SECURITY;
-ALTER TABLE monthly_progress ENABLE ROW LEVEL SECURITY;
-ALTER TABLE daily_checkins ENABLE ROW LEVEL SECURITY;
+drop policy if exists profiles_select_own on profiles;
+drop policy if exists profiles_insert_own on profiles;
+drop policy if exists profiles_update_own on profiles;
 
--- 10. CREATE SECURITY POLICIES
--- Users can only read/write their own data
+create policy profiles_select_own on profiles
+for select using (auth.uid() = id);
 
-CREATE POLICY "Users can view own profile" ON profiles FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can update own profile" ON profiles FOR UPDATE USING (auth.uid() = id);
-CREATE POLICY "Users can insert own profile" ON profiles FOR INSERT WITH CHECK (auth.uid() = id);
+create policy profiles_insert_own on profiles
+for insert with check (auth.uid() = id);
 
-CREATE POLICY "Users can view own workout logs" ON workout_logs FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own workout logs" ON workout_logs FOR INSERT WITH CHECK (auth.uid() = user_id);
+create policy profiles_update_own on profiles
+for update using (auth.uid() = id) with check (auth.uid() = id);
 
-CREATE POLICY "Users can view own memory" ON personal_memory FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own memory" ON personal_memory FOR INSERT WITH CHECK (auth.uid() = user_id);
+drop policy if exists workout_logs_select_own on workout_logs;
+drop policy if exists workout_logs_insert_own on workout_logs;
+create policy workout_logs_select_own on workout_logs
+for select using (auth.uid() = user_id);
+create policy workout_logs_insert_own on workout_logs
+for insert with check (auth.uid() = user_id);
 
-CREATE POLICY "Users can view own emotional logs" ON emotional_logs FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own emotional logs" ON emotional_logs FOR INSERT WITH CHECK (auth.uid() = user_id);
+drop policy if exists emotional_logs_select_own on emotional_logs;
+drop policy if exists emotional_logs_insert_own on emotional_logs;
+create policy emotional_logs_select_own on emotional_logs
+for select using (auth.uid() = user_id);
+create policy emotional_logs_insert_own on emotional_logs
+for insert with check (auth.uid() = user_id);
 
-CREATE POLICY "Users can view own ai messages" ON ai_messages FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own ai messages" ON ai_messages FOR INSERT WITH CHECK (auth.uid() = user_id);
+drop policy if exists ai_messages_select_own on ai_messages;
+drop policy if exists ai_messages_insert_own on ai_messages;
+create policy ai_messages_select_own on ai_messages
+for select using (auth.uid() = user_id);
+create policy ai_messages_insert_own on ai_messages
+for insert with check (auth.uid() = user_id);
 
-CREATE POLICY "Users can view own daily checkins" ON daily_checkins FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own daily checkins" ON daily_checkins FOR INSERT WITH CHECK (auth.uid() = user_id);
+drop policy if exists daily_checkins_select_own on daily_checkins;
+drop policy if exists daily_checkins_insert_own on daily_checkins;
+drop policy if exists daily_checkins_update_own on daily_checkins;
+create policy daily_checkins_select_own on daily_checkins
+for select using (auth.uid() = user_id);
+create policy daily_checkins_insert_own on daily_checkins
+for insert with check (auth.uid() = user_id);
+create policy daily_checkins_update_own on daily_checkins
+for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
--- Add similar policies for diet_plans and monthly_progress if needed
-
--- 11. MIGRATIONS (Add new columns to existing tables)
--- If the profiles table already exists, run this migration to add gym_experience column:
--- ALTER TABLE profiles ADD COLUMN IF NOT EXISTS gym_experience TEXT CHECK (gym_experience IN ('newbie', 'casual', 'consistent', 'veteran'));
--- Set default for existing rows (comment out if you want to require users to fill this in)
--- UPDATE profiles SET gym_experience = 'casual' WHERE gym_experience IS NULL;
+drop policy if exists food_logs_select_own on food_intake_logs;
+drop policy if exists food_logs_insert_own on food_intake_logs;
+drop policy if exists food_logs_delete_own on food_intake_logs;
+create policy food_logs_select_own on food_intake_logs
+for select using (auth.uid() = user_id);
+create policy food_logs_insert_own on food_intake_logs
+for insert with check (auth.uid() = user_id);
+create policy food_logs_delete_own on food_intake_logs
+for delete using (auth.uid() = user_id);

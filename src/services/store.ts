@@ -2,9 +2,7 @@
 // Maintains same interfaces for system-wide compatibility
 
 import { useState, useEffect, useMemo } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
-import { auth, db, ensureAuthPersistence, startAuthKeepAlive, stopAuthKeepAlive } from './firebase';
+import { addDoc, auth, collection, db, doc, ensureAuthPersistence, getDoc, getDocs, onAuthStateChanged, query, startAuthKeepAlive, stopAuthKeepAlive, where } from './firebase';
 import { ensureUserProfileExists, syncUserToBackend } from './authSync';
 import { type MuscleGroup } from '../data/exercises';
 

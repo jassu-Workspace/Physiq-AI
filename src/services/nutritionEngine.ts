@@ -101,6 +101,141 @@ export function getCarbCycleDay(
     return isTrainingDay ? 'high' : 'medium';
 }
 
+type MealMacroTarget = {
+    calories: number;
+    protein: number;
+    carbs: number;
+    fats: number;
+};
+
+type MealFood = { foodId: string; name: string; servings: number; calories: number; protein: number; carbs: number; fats: number };
+
+const personalityTuning: Record<UserProfile['userType'], { varietyBoost: number; densityBias: number; cleanFoodBias: number; prepBias: number }> = {
+    disciplined: { varietyBoost: 0.8, densityBias: 1.1, cleanFoodBias: 1.2, prepBias: 0.8 },
+    struggler: { varietyBoost: 1.3, densityBias: 0.9, cleanFoodBias: 1.0, prepBias: 1.3 },
+    analytical: { varietyBoost: 1.1, densityBias: 1.15, cleanFoodBias: 1.25, prepBias: 0.9 },
+    competitive: { varietyBoost: 1.0, densityBias: 1.25, cleanFoodBias: 1.0, prepBias: 0.9 },
+    unknown: { varietyBoost: 1.0, densityBias: 1.0, cleanFoodBias: 1.0, prepBias: 1.0 },
+};
+
+function hashString(input: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < input.length; i++) {
+        h ^= input.charCodeAt(i);
+        h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+    }
+    return Math.abs(h >>> 0);
+}
+
+function seededUnit(seed: string, salt: string): number {
+    return (hashString(`${seed}:${salt}`) % 10000) / 10000;
+}
+
+function getDateSeed(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function mealDistributionForUser(user: UserProfile, carbDay: 'high' | 'medium' | 'low'): Record<PlannedMeal['type'], number> {
+    const base: Record<PlannedMeal['type'], number> = {
+        breakfast: 0.24,
+        pre_workout: 0.12,
+        lunch: 0.30,
+        post_workout: 0.12,
+        dinner: 0.18,
+        snack: 0.04,
+    };
+
+    if (user.goal === 'fat_loss') {
+        base.snack = 0.03;
+        base.dinner = 0.16;
+        base.lunch = 0.33;
+    }
+
+    if (carbDay === 'low') {
+        base.pre_workout = 0.09;
+        base.post_workout = 0.08;
+        base.dinner = 0.22;
+    }
+
+    if (user.userType === 'struggler') {
+        // Slightly larger breakfast and dinner helps adherence.
+        base.breakfast += 0.03;
+        base.dinner += 0.03;
+        base.snack = Math.max(0.02, base.snack - 0.02);
+        base.pre_workout = Math.max(0.08, base.pre_workout - 0.02);
+    }
+
+    const total = Object.values(base).reduce((a, b) => a + b, 0);
+    (Object.keys(base) as PlannedMeal['type'][]).forEach((k) => {
+        base[k] = base[k] / total;
+    });
+    return base;
+}
+
+function macroGapScore(food: FoodItem, target: MealMacroTarget): number {
+    const proteinGap = Math.abs(target.protein - food.protein);
+    const carbsGap = Math.abs(target.carbs - food.carbs);
+    const fatsGap = Math.abs(target.fats - food.fats);
+    const calsGap = Math.abs(target.calories - food.calories);
+    return proteinGap * 1.9 + carbsGap * 1.1 + fatsGap * 1.0 + calsGap * 0.22;
+}
+
+function profileFoodScore(food: FoodItem, user: UserProfile, target: MealMacroTarget, seedKey: string, usedIds: Set<string>): number {
+    const tuning = personalityTuning[user.userType ?? 'unknown'];
+    const proteinDensity = food.protein / Math.max(food.calories, 1);
+    const cleanFood = food.healthRating + Math.min(food.fiber / 3, 2);
+
+    const prepPenalty = (food.prepTime || 0) * 0.08 * tuning.prepBias;
+    const noveltyPenalty = usedIds.has(food.id) ? 16 * tuning.varietyBoost : 0;
+    const streetPenalty = food.isStreetFood ? 3 : 0;
+    const densityReward = proteinDensity * 35 * tuning.densityBias;
+    const cleanReward = cleanFood * 3.5 * tuning.cleanFoodBias;
+    const seededNudge = seededUnit(seedKey, food.id) * 5;
+
+    let goalAdjustment = 0;
+    if (user.goal === 'fat_loss') {
+        goalAdjustment += food.calories <= 250 ? 6 : -4;
+    }
+    if (user.goal === 'muscle_gain') {
+        goalAdjustment += food.protein >= 12 ? 5 : -2;
+    }
+    if (user.goal === 'endurance') {
+        goalAdjustment += food.carbs >= 20 ? 4 : -2;
+    }
+
+    return macroGapScore(food, target) + prepPenalty + streetPenalty + noveltyPenalty - densityReward - cleanReward - goalAdjustment - seededNudge;
+}
+
+function toMealFood(food: FoodItem, servings: number): MealFood {
+    const s = Math.max(1, Math.min(3, Math.round(servings)));
+    return {
+        foodId: food.id,
+        name: food.name,
+        servings: s,
+        calories: Math.round(food.calories * s),
+        protein: Math.round(food.protein * s),
+        carbs: Math.round(food.carbs * s),
+        fats: Math.round(food.fats * s),
+    };
+}
+
+function chooseServing(food: FoodItem, target: MealMacroTarget, candidateIndex: number): number {
+    const calsBased = target.calories / Math.max(food.calories, 1);
+    const proteinBased = target.protein > 0 ? target.protein / Math.max(food.protein, 1) : 1;
+    const blended = candidateIndex === 0 ? (calsBased * 0.4 + proteinBased * 0.6) : calsBased * 0.6;
+    return Math.max(1, Math.min(3, Math.round(blended * (candidateIndex === 0 ? 0.8 : 0.45))));
+}
+
+function buildTargetForMeal(total: MacroTargets, ratio: number): MealMacroTarget {
+    return {
+        calories: Math.round(total.calories * ratio),
+        protein: Math.round(total.protein * ratio),
+        carbs: Math.round(total.carbs * ratio),
+        fats: Math.round(total.fats * ratio),
+    };
+}
+
 function adjustMacrosForCarbCycle(
     macros: MacroTargets,
     carbDay: 'high' | 'medium' | 'low'
@@ -118,44 +253,48 @@ function adjustMacrosForCarbCycle(
     };
 }
 
-// Select foods for a meal
+// Select foods for a meal with personality + day-based diversity
 function selectFoodsForMeal(
     category: FoodItem['category'],
-    dietType: UserProfile['dietType'],
-    targetCalories: number,
-    targetProtein: number,
-): { foodId: string; name: string; servings: number; calories: number; protein: number; carbs: number; fats: number }[] {
-    const type = dietType === 'non_vegetarian' ? 'any' : dietType;
-    const available = getMealPlanFoods(type as any, category);
+    user: UserProfile,
+    target: MealMacroTarget,
+    usedIds: Set<string>,
+): MealFood[] {
+    const type = user.dietType === 'non_vegetarian' ? 'any' : user.dietType;
+    const available = getMealPlanFoods(type as any, category)
+        .filter((food) => food.calories > 0 && food.protein >= 0);
 
     if (available.length === 0) return [];
 
+    const seedKey = `${user.id}:${getDateSeed()}:${category}`;
     const sorted = [...available].sort((a, b) => {
-        const scoreA = a.healthRating * 2 + (a.protein / Math.max(a.calories, 1)) * 100;
-        const scoreB = b.healthRating * 2 + (b.protein / Math.max(b.calories, 1)) * 100;
-        return scoreB - scoreA;
+        const scoreA = profileFoodScore(a, user, target, seedKey, usedIds);
+        const scoreB = profileFoodScore(b, user, target, seedKey, usedIds);
+        return scoreA - scoreB;
     });
 
-    const selected: { foodId: string; name: string; servings: number; calories: number; protein: number; carbs: number; fats: number }[] = [];
-    let remainingCals = targetCalories;
+    const selectionCount = user.userType === 'struggler' ? 2 : user.userType === 'analytical' ? 4 : 3;
+    const selected: MealFood[] = [];
+    const tokens = new Set<string>();
 
-    const count = Math.min(3, sorted.length);
-    for (let i = 0; i < count && remainingCals > 50; i++) {
-        const food = sorted[i % sorted.length];
-        const servings = Math.max(1, Math.round(remainingCals / food.calories * 0.6));
-        const actualServings = Math.min(servings, 2);
+    for (const food of sorted) {
+        if (selected.length >= selectionCount) break;
+        const token = food.name.toLowerCase().split(' ')[0];
+        if (tokens.has(token) && selected.length > 0) continue;
 
-        selected.push({
-            foodId: food.id,
-            name: food.name,
-            servings: actualServings,
-            calories: Math.round(food.calories * actualServings),
-            protein: Math.round(food.protein * actualServings),
-            carbs: Math.round(food.carbs * actualServings),
-            fats: Math.round(food.fats * actualServings),
-        });
+        const servings = chooseServing(food, target, selected.length);
+        const mealFood = toMealFood(food, servings);
+        selected.push(mealFood);
+        usedIds.add(food.id);
+        tokens.add(token);
+    }
 
-        remainingCals -= food.calories * actualServings;
+    if (selected.length === 0) {
+        const fallback = sorted[0];
+        if (fallback) {
+            selected.push(toMealFood(fallback, chooseServing(fallback, target, 0)));
+            usedIds.add(fallback.id);
+        }
     }
 
     return selected;
@@ -176,28 +315,27 @@ export function generateMealPlan(user: UserProfile): DietPlan {
     const foodProteinTarget = Math.max(adjustedMacros.protein - supplementProtein, 50);
     const foodCalorieTarget = adjustedMacros.calories - supplementCalories;
 
-    // Distribute food calories across meals (adjusted for supplement intake)
-    const mealDistribution = {
-        breakfast: 0.25,
-        pre_workout: 0.10,
-        lunch: 0.30,
-        post_workout: 0.10,
-        dinner: 0.20,
-        snack: 0.05,
+    const mealDistribution = mealDistributionForUser(user, carbDay);
+    const usedIds = new Set<string>();
+
+    const foodTargets: MacroTargets = {
+        calories: foodCalorieTarget,
+        protein: foodProteinTarget,
+        carbs: adjustedMacros.carbs,
+        fats: adjustedMacros.fats,
     };
 
-    const meals: PlannedMeal[] = Object.entries(mealDistribution).map(([type, ratio]) => {
-        const targetCals = Math.round(foodCalorieTarget * ratio);
-        const targetProtein = Math.round(foodProteinTarget * ratio);
+    const meals: PlannedMeal[] = (Object.entries(mealDistribution) as [PlannedMeal['type'], number][]).map(([type, ratio]) => {
+        const mealTarget = buildTargetForMeal(foodTargets, ratio);
         const foods = selectFoodsForMeal(
-            type as FoodItem['category'],
-            user.dietType,
-            targetCals,
-            targetProtein,
+            type,
+            user,
+            mealTarget,
+            usedIds,
         );
 
         return {
-            type: type as PlannedMeal['type'],
+            type,
             foods,
             totalCalories: foods.reduce((s, f) => s + f.calories, 0),
             totalProtein: foods.reduce((s, f) => s + f.protein, 0),
@@ -274,23 +412,29 @@ export function suggestNextMealFoods(
     const type = user.dietType === 'non_vegetarian' ? 'any' : user.dietType;
     const options = getMealPlanFoods(type as any, category);
 
-    return [...options]
-        .sort((a, b) => {
-            const scoreA =
-                Math.abs(remaining.protein - a.protein) * 2 +
-                Math.abs(remaining.carbs - a.carbs) +
-                Math.abs(remaining.fats - a.fats) +
-                Math.abs(remaining.calories - a.calories) * 0.3 -
-                a.healthRating * 3;
+    const target: MealMacroTarget = {
+        calories: Math.max(150, remaining.calories / 2),
+        protein: Math.max(8, remaining.protein / 2),
+        carbs: Math.max(8, remaining.carbs / 2),
+        fats: Math.max(3, remaining.fats / 2),
+    };
 
-            const scoreB =
-                Math.abs(remaining.protein - b.protein) * 2 +
-                Math.abs(remaining.carbs - b.carbs) +
-                Math.abs(remaining.fats - b.fats) +
-                Math.abs(remaining.calories - b.calories) * 0.3 -
-                b.healthRating * 3;
+    const seedKey = `${user.id}:${getDateSeed()}:next:${category}`;
+    const sorted = [...options].sort((a, b) => {
+        const scoreA = profileFoodScore(a, user, target, seedKey, new Set());
+        const scoreB = profileFoodScore(b, user, target, seedKey, new Set());
+        return scoreA - scoreB;
+    });
 
-            return scoreA - scoreB;
-        })
-        .slice(0, 3);
+    const picked: FoodItem[] = [];
+    const seen = new Set<string>();
+    for (const food of sorted) {
+        if (picked.length >= 6) break;
+        const token = food.name.toLowerCase().split(' ')[0];
+        if (seen.has(token)) continue;
+        picked.push(food);
+        seen.add(token);
+    }
+
+    return picked;
 }

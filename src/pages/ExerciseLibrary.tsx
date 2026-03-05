@@ -447,7 +447,9 @@ export default function ExerciseLibrary() {
                 ) : (
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                         {filtered.map(ex => (
-                            <ExerciseCard key={ex.id} ex={ex} onSelect={() => setSelected(ex)} />
+                            <div key={ex.id}>
+                                <ExerciseCard ex={ex} onSelect={() => setSelected(ex)} />
+                            </div>
                         ))}
                     </div>
                 )

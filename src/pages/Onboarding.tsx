@@ -10,8 +10,7 @@ import {
     type SupplementProfile, type DayName,
     createEmptySchedule, createDefaultSupplements, generateSessionLabel, countTrainingDays, normalizeUserProfile
 } from '../services/store';
-import { doc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../services/firebase';
+import { auth, db, doc, setDoc } from '../services/firebase';
 import { type MuscleGroup } from '../data/exercises';
 
 interface OnboardingProps {
@@ -209,7 +208,7 @@ export default function Onboarding({ onComplete, initialUser, mode = 'create', o
                 user_type: 'unknown',
                 coach_style: 'supportive',
                 motivation_trigger: 'consistency',
-                response_preference: 'medium',
+                response_preference: initialUser?.responsePreference ?? 'medium',
                 psych_state: {
                     motivationLevel: 'high',
                     consistencyStreak: 0,

@@ -4,8 +4,7 @@ import { Utensils, Flame, Droplets, Zap, Clock, Target, Apple, Coffee, Sun, Moon
 import { type UserProfile } from '../services/store';
 import { generateMealPlan, getNutritionSummary, suggestNextMealFoods } from '../services/nutritionEngine';
 import { combinedFoods, type FoodItem } from '../data/combinedFoods';
-import { addDoc, collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
-import { db } from '../services/firebase';
+import { addDoc, collection, db, deleteDoc, doc, getDocs, query, setDoc, where } from '../services/firebase';
 
 interface NutritionDashboardProps {
   user: UserProfile;

@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import {
+    auth,
     createUserWithEmailAndPassword,
+    ensureAuthPersistence,
+    googleProvider,
     sendEmailVerification,
     signInWithEmailAndPassword,
     signInWithPopup,
     signInWithRedirect,
     updateProfile,
-} from 'firebase/auth';
-import { auth, ensureAuthPersistence, googleProvider } from '../services/firebase';
+} from '../services/firebase';
 import { Loader2, Sparkles, Mail, Lock, User, Dumbbell } from 'lucide-react';
 
 type AuthView = 'login' | 'signup';

@@ -7,8 +7,7 @@ import {
 } from 'lucide-react';
 import { type UserProfile, type WorkoutLog, normalizeWorkoutLog, useWorkoutHistory } from '../services/store';
 import { generateWorkout, getMuscleRecoveryScores, getOvertrainingWarnings, getSetPrescriptionsForExercise } from '../services/workoutEngine';
-import { addDoc, collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
-import { db } from '../services/firebase';
+import { addDoc, collection, db, doc, getDocs, query, setDoc, where } from '../services/firebase';
 import { useExerciseDB, findMatchingFreeExercise, getExerciseImageUrl, type FreeExercise } from '../services/exerciseDB';
 import { ExerciseCard, ExerciseDetail, MUSCLE_LABEL, LEVEL_COLOR } from './ExerciseLibrary';
 
@@ -244,6 +243,67 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
     const [hydrationMl, setHydrationMl] = useState(0);
     const hydrationGoalMl = Math.max(1000, (user.waterIntakeGoal || 3) * 1000);
     const hydrationPct = Math.min(100, Math.round((hydrationMl / hydrationGoalMl) * 100));
+    const exerciseIdsSignature = useMemo(
+        () => workout.exercises.map((ex) => ex.exercise.id).join('|'),
+        [workout.exercises]
+    );
+
+    const getExerciseProgressKey = (exerciseIdx: number): string => {
+        const exerciseId = workout.exercises[exerciseIdx]?.exercise?.id;
+        return exerciseId || `${exerciseIdx}`;
+    };
+
+    React.useEffect(() => {
+        const loadSetProgress = async () => {
+            if (!user.id || workout.exercises.length === 0) return;
+
+            const dateKey = getLocalDateKey(Date.now());
+            const validExerciseIds = new Set(workout.exercises.map((ex) => ex.exercise.id));
+            const validExerciseKeys = new Set(workout.exercises.map((_, idx) => getExerciseProgressKey(idx)));
+
+            try {
+                const rows = await getDocs(query(
+                    collection(db, 'workout_set_progress'),
+                    where('user_id', '==', user.id),
+                    where('date_key', '==', dateKey)
+                ));
+
+                if (rows.empty) {
+                    setCompletedSets({});
+                    return;
+                }
+
+                const restored: Record<string, boolean[]> = {};
+
+                rows.docs.forEach((row) => {
+                    const data = row.data() as any;
+                    const exerciseId = String(data.exercise_id ?? '');
+                    const rawExerciseKey = String(data.exercise_key ?? '');
+                    const exerciseKey = validExerciseIds.has(exerciseId)
+                        ? exerciseId
+                        : rawExerciseKey;
+                    const setIndex = Number(data.set_index ?? -1);
+                    const completed = Boolean(data.completed);
+                    if (!exerciseKey || setIndex < 0) return;
+                    if (!validExerciseKeys.has(exerciseKey) && !validExerciseIds.has(exerciseKey)) return;
+
+                    const requiredLen = Math.max(setIndex + 1, restored[exerciseKey]?.length ?? 0);
+                    const arr = restored[exerciseKey] ? [...restored[exerciseKey]] : new Array(requiredLen).fill(false);
+                    if (arr.length < requiredLen) {
+                        while (arr.length < requiredLen) arr.push(false);
+                    }
+                    arr[setIndex] = completed;
+                    restored[exerciseKey] = arr;
+                });
+
+                setCompletedSets(restored);
+            } catch (error) {
+                console.error('Failed to load workout set progress:', error);
+            }
+        };
+
+        void loadSetProgress();
+    }, [user.id, workout.splitDay, workout.sessionIndex, exerciseIdsSignature]);
 
     React.useEffect(() => {
         const loadHydration = async () => {
@@ -369,11 +429,31 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
     const progress = totalSets > 0 ? Math.round((completedCount / totalSets) * 100) : 0;
 
     const toggleSet = (exerciseIdx: number, setIdx: number) => {
-        const key = `${exerciseIdx}`;
-        setCompletedSets(prev => {
-            const sets = prev[key] ? [...prev[key]] : new Array(workout.exercises[exerciseIdx]?.sets ?? 0).fill(false);
-            sets[setIdx] = !sets[setIdx];
-            return { ...prev, [key]: sets };
+        const exercise = workout.exercises[exerciseIdx];
+        if (!exercise || !user.id) return;
+
+        const key = getExerciseProgressKey(exerciseIdx);
+        const currentSets = completedSets[key] ? [...completedSets[key]] : new Array(exercise.sets).fill(false);
+        const nextCompleted = !Boolean(currentSets[setIdx]);
+        currentSets[setIdx] = nextCompleted;
+        setCompletedSets(prev => ({ ...prev, [key]: currentSets }));
+
+        const dateKey = getLocalDateKey(Date.now());
+        const docId = `${user.id}_${dateKey}_${workout.sessionIndex || 0}_${key}_${setIdx}`;
+        void setDoc(doc(db, 'workout_set_progress', docId), {
+            id: docId,
+            user_id: user.id,
+            date_key: dateKey,
+            split_day: workout.splitDay,
+            session_index: workout.sessionIndex || 0,
+            exercise_id: exercise.exercise.id,
+            exercise_key: key,
+            set_index: setIdx,
+            completed: nextCompleted,
+            updated_at: Date.now(),
+            created_at: Date.now(),
+        }, { merge: true }).catch((error) => {
+            console.error('Failed to persist set progress:', error);
         });
     };
 
@@ -419,7 +499,7 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
             sets: Array.from({ length: ex.sets }, (_, i) => ({
                 weight: selectedWeights[`${idx}_${i}`] ?? setPlans[idx]?.[i]?.targetWeightKg ?? 0,
                 reps: setPlans[idx]?.[i]?.targetReps ?? (parseInt(ex.reps) || 10),
-                completed: completedSets[`${idx}`]?.[i] || false,
+                completed: completedSets[getExerciseProgressKey(idx)]?.[i] || false,
             })),
         }));
         try {
@@ -660,7 +740,8 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                                         {exList.map((ex) => {
                                             const idx = workout.exercises.indexOf(ex);
                                             const isExpanded = expandedExercise === idx;
-                                            const sets = completedSets[`${idx}`] || new Array(ex.sets).fill(false);
+                                            const exerciseKey = getExerciseProgressKey(idx);
+                                            const sets = completedSets[exerciseKey] || new Array(ex.sets).fill(false);
                                             const allDone = sets.every(Boolean);
                                             const freeEx = freeExercises.length > 0 ? findMatchingFreeExercise(ex.exercise.name, freeExercises) : null;
 
@@ -940,12 +1021,13 @@ export default function WorkoutPlan({ user }: WorkoutPlanProps) {
                     )}
 
                     {freeExercises.length > 0 && WORKOUT_CATEGORIES.map(cat => (
-                        <CategorySection
-                            key={cat.id}
-                            cat={cat}
-                            exercises={freeExercises}
-                            onSelect={setDetailEx}
-                        />
+                        <div key={cat.id}>
+                            <CategorySection
+                                cat={cat}
+                                exercises={freeExercises}
+                                onSelect={setDetailEx}
+                            />
+                        </div>
                     ))}
                 </div>
             )}

@@ -11,8 +11,7 @@ import ExerciseLibrary from './pages/ExerciseLibrary';
 import { motion, AnimatePresence } from 'motion/react';
 import { Zap } from 'lucide-react';
 import { type UserProfile, useNormalizedUser } from './services/store';
-import { signOut } from 'firebase/auth';
-import { auth } from './services/firebase';
+import { auth, signOut } from './services/firebase';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');

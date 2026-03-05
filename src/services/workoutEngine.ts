@@ -32,6 +32,80 @@ export interface SetPrescription {
     note: string;
 }
 
+type PersonalityPreset = {
+    volumeBias: number;
+    intensityBias: number;
+    compoundBias: number;
+    varietyBias: number;
+};
+
+const personalityPreset: Record<UserProfile['userType'], PersonalityPreset> = {
+    disciplined: { volumeBias: 1.05, intensityBias: 1.15, compoundBias: 1.2, varietyBias: 0.9 },
+    struggler: { volumeBias: 0.9, intensityBias: 0.9, compoundBias: 1.0, varietyBias: 1.2 },
+    analytical: { volumeBias: 1.0, intensityBias: 1.0, compoundBias: 1.1, varietyBias: 1.1 },
+    competitive: { volumeBias: 1.1, intensityBias: 1.2, compoundBias: 1.25, varietyBias: 1.0 },
+    unknown: { volumeBias: 1.0, intensityBias: 1.0, compoundBias: 1.0, varietyBias: 1.0 },
+};
+
+function getGoalRepRange(goal: UserProfile['goal'], category: Exercise['category']): string {
+    if (goal === 'strength') return category === 'compound' ? '3-6' : '6-10';
+    if (goal === 'fat_loss') return category === 'cardio' ? '30-45s' : '10-15';
+    if (goal === 'endurance') return category === 'compound' ? '10-15' : '12-20';
+    if (goal === 'muscle_gain') return category === 'compound' ? '6-10' : '10-15';
+    return category === 'compound' ? '6-10' : '10-12';
+}
+
+function getGoalRest(goal: UserProfile['goal'], category: Exercise['category']): number {
+    if (goal === 'strength') return category === 'compound' ? 180 : 120;
+    if (goal === 'fat_loss') return category === 'cardio' ? 30 : 45;
+    if (goal === 'endurance') return 60;
+    if (goal === 'muscle_gain') return category === 'compound' ? 105 : 75;
+    return 90;
+}
+
+function getRecentExerciseIds(history: WorkoutLog[], limit: number = 3): Set<string> {
+    const recent = [...history].sort((a, b) => b.date - a.date).slice(0, limit);
+    const ids = new Set<string>();
+    recent.forEach((w) => {
+        w.exercises.forEach((e) => {
+            ids.add(e.exerciseId);
+        });
+    });
+    return ids;
+}
+
+function scoreExerciseCandidate(
+    exercise: Exercise,
+    user: UserProfile,
+    recoveryScore: number,
+    recentIds: Set<string>,
+    selectionIndex: number,
+): number {
+    const preset = personalityPreset[user.userType ?? 'unknown'];
+    const levelScore = user.fitnessLevel === exercise.level ? 12 : exercise.level === 'beginner' ? 8 : -4;
+    const compoundScore = exercise.category === 'compound' ? 14 * preset.compoundBias : 6;
+    const recoveryPenalty = recoveryScore < 55 && exercise.category === 'compound' ? 10 : 0;
+    const repeatPenalty = recentIds.has(exercise.id) ? 12 * preset.varietyBias : 0;
+    const isolationBoost = selectionIndex > 0 && exercise.category === 'isolation' ? 6 : 0;
+
+    let styleScore = 0;
+    if (user.trainingStyle === 'powerlifting' && exercise.equipment === 'barbell') styleScore += 10;
+    if (user.trainingStyle === 'bodybuilding' && exercise.category === 'isolation') styleScore += 8;
+    if (user.trainingStyle === 'functional' && (exercise.category === 'compound' || exercise.category === 'cardio')) styleScore += 8;
+    if (user.trainingStyle === 'calisthenics' && exercise.equipment === 'bodyweight') styleScore += 12;
+
+    return 100 - (compoundScore + levelScore + styleScore + isolationBoost) + recoveryPenalty + repeatPenalty;
+}
+
+function determineExerciseCount(user: UserProfile, recoveryScore: number, availableCount: number): number {
+    const preset = personalityPreset[user.userType ?? 'unknown'];
+    let base = user.goal === 'strength' ? 3 : user.goal === 'fat_loss' ? 4 : 3;
+    if (recoveryScore < 50) base -= 1;
+    if (user.fitnessLevel === 'advanced') base += 1;
+    const adjusted = Math.round(base * preset.volumeBias);
+    return Math.max(2, Math.min(adjusted, Math.max(2, Math.min(5, availableCount))));
+}
+
 function parseRepTarget(reps: string): number {
     if (reps.includes('-')) {
         const first = parseInt(reps.split('-')[0], 10);
@@ -94,58 +168,76 @@ export function getSetPrescriptionsForExercise(
 // Select exercises for muscle groups with recovery + goal adaptation
 function selectExercisesForMuscle(
     muscle: string,
+    user: UserProfile,
     level: UserProfile['fitnessLevel'],
     goal: UserProfile['goal'],
-    recoveryScore: number
+    recoveryScore: number,
+    history: WorkoutLog[]
 ): WorkoutExercise[] {
     // Only use exercises where this is the PRIMARY muscle group — prevents
     // cross-contamination between sections (e.g. Pull-Ups bleeding into biceps)
     const available = exercises.filter(e => e.muscleGroup === (muscle as MuscleGroup));
     if (available.length === 0) return [];
 
-    let filtered = available.filter(e => {
+    let filtered = available.filter((e) => {
         if (level === 'beginner') return e.level !== 'advanced';
         return true;
     });
 
-    // Prioritize compounds
-    filtered.sort((a, b) => {
-        if (a.category === 'compound' && b.category !== 'compound') return -1;
-        if (b.category === 'compound' && a.category !== 'compound') return 1;
-        return 0;
+    const recentIds = getRecentExerciseIds(history, 3);
+    filtered = [...filtered].sort((a, b) => {
+        const scoreA = scoreExerciseCandidate(a, user, recoveryScore, recentIds, 0);
+        const scoreB = scoreExerciseCandidate(b, user, recoveryScore, recentIds, 0);
+        return scoreA - scoreB;
     });
 
-    // Return all available exercises — UI will handle minimum display count
-    const selected = filtered;
+    const targetCount = determineExerciseCount(user, recoveryScore, filtered.length);
+    const selected: Exercise[] = [];
+
+    for (const candidate of filtered) {
+        if (selected.length >= targetCount) break;
+        const alreadyHasCategory = selected.some((s) => s.category === candidate.category);
+        if (selected.length > 0 && selected.length < targetCount - 1 && alreadyHasCategory && candidate.category !== 'compound') {
+            continue;
+        }
+        selected.push(candidate);
+    }
+
+    if (selected.length === 0 && filtered[0]) selected.push(filtered[0]);
 
     return selected.map((exercise, idx) => {
+        const preset = personalityPreset[user.userType ?? 'unknown'];
         let sets = exercise.defaultSets;
-        let reps = exercise.defaultReps;
-        let restSeconds = 90;
+        let reps = getGoalRepRange(goal, exercise.category);
+        let restSeconds = getGoalRest(goal, exercise.category);
         const notes: string[] = [];
 
-        if (goal === 'strength') {
-            sets = Math.max(sets, 4);
-            reps = exercise.category === 'compound' ? '3-6' : '6-8';
-            restSeconds = 180;
-            notes.push('Focus on heavy weight, full recovery between sets');
-        } else if (goal === 'fat_loss') {
-            sets = 3;
-            restSeconds = 45;
-            notes.push('Keep rest short for metabolic effect');
-        } else if (goal === 'muscle_gain') {
-            reps = exercise.category === 'compound' ? '6-10' : '10-15';
-            restSeconds = 90;
-            notes.push('Control the eccentric phase — 3 seconds down');
-        }
+        sets = Math.max(2, Math.round(sets * preset.volumeBias));
+        restSeconds = Math.round(restSeconds / preset.intensityBias);
+
+        if (goal === 'strength' && exercise.category === 'compound') sets = Math.max(4, sets);
+        if (goal === 'fat_loss' && exercise.category === 'isolation') sets = Math.max(3, sets);
 
         if (recoveryScore < 40) {
             sets = Math.max(2, sets - 1);
-            notes.push('Reduced volume due to recovery needs');
+            notes.push('Recovery-adjusted volume to prevent overtraining');
+        }
+
+        if (idx === 0 && exercise.category === 'compound') {
+            notes.push('Primary lift: prioritize perfect technique and progressive overload');
+        }
+        if (user.userType === 'analytical') {
+            notes.push('Track RPE on final set and compare to last week');
+        }
+        if (user.userType === 'competitive') {
+            notes.push('Beat previous top set by 1 rep or 2.5 kg');
         }
 
         return {
-            exercise, sets, reps, restSeconds,
+            exercise,
+            sets,
+            reps,
+            restSeconds: Math.max(30, restSeconds),
             notes: notes.join('. '),
             isWarmup: idx === 0 && exercise.category === 'compound',
         };
@@ -258,22 +350,29 @@ export function generateWorkout(user: UserProfile, history: WorkoutLog[], sessio
 
     for (const muscle of muscleGroups) {
         const muscleRecovery = recoveryScores[muscle] || 100;
-        const muscleExercises = selectExercisesForMuscle(muscle, user.fitnessLevel, user.goal, muscleRecovery);
+        const muscleExercises = selectExercisesForMuscle(muscle, user, user.fitnessLevel, user.goal, muscleRecovery, history);
         allExercises.push(...muscleExercises);
     }
 
-    const totalSets = allExercises.reduce((s, e) => s + e.sets, 0);
-    const avgRest = allExercises.reduce((s, e) => s + e.restSeconds, 0) / Math.max(allExercises.length, 1);
+    // Keep total session length practical while retaining main lifts.
+    const maxExercises = user.fitnessLevel === 'advanced' ? 12 : 9;
+    const cappedExercises = allExercises.slice(0, maxExercises);
+
+    const totalSets = cappedExercises.reduce((s, e) => s + e.sets, 0);
+    const avgRest = cappedExercises.reduce((s, e) => s + e.restSeconds, 0) / Math.max(cappedExercises.length, 1);
     const estimatedDuration = Math.round((totalSets * (45 + avgRest)) / 60);
 
     const avgRecovery = muscleGroups.reduce((s, m) => s + (recoveryScores[m] || 100), 0) / muscleGroups.length;
     const intensity = avgRecovery >= 80 ? 'intense' : avgRecovery >= 50 ? 'moderate' : 'light';
 
     const notes: string[] = [];
-    if (intensity === 'light') notes.push("Some muscles are still recovering — I've adjusted the intensity.");
+    if (intensity === 'light') notes.push("Some muscles are still recovering; intensity and volume were auto-adjusted.");
     if (user.goal === 'strength') notes.push('Focus on heavy compounds with full rest between sets.');
     if (user.goal === 'muscle_gain') notes.push('Chase the pump — controlled tempo and mind-muscle connection.');
     if (user.goal === 'fat_loss') notes.push('Keep rest periods short and supersets where possible.');
+    if (user.userType === 'analytical') notes.push('Log top set load and RPE to improve weekly programming precision.');
+    if (user.userType === 'struggler') notes.push('Winning today means completion first; intensity is secondary.');
+    if (user.userType === 'competitive') notes.push('Target one measurable PR in this session.');
 
     const sessionLabel = todaySchedule.sessions.length > 1
         ? `${dayLabel} — ${session.label} (${session.timeSlot})`
@@ -283,10 +382,10 @@ export function generateWorkout(user: UserProfile, history: WorkoutLog[], sessio
         splitDay: sessionLabel,
         muscleGroups: muscleGroups as string[],
         focus: session.label,
-        exercises: allExercises,
+        exercises: cappedExercises,
         estimatedDuration: Math.max(30, estimatedDuration),
         intensity,
-        coachNote: notes.join(' ') || `Today is ${session.label} day.Let's make every rep count!`,
+        coachNote: notes.join(' ') || `Today is ${session.label} day. Let's make every rep count!`,
         sessionIndex,
     };
 }
