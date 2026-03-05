@@ -119,7 +119,7 @@ export async function updateProfile(_user: User, payload: { displayName?: string
 
 async function oauthSignIn(provider: GoogleAuthProvider): Promise<void> {
     const queryParams = provider.getCustomParameters();
-    const redirectTo = window.location.origin;
+    const redirectTo = 'https://physiq-ai.onrender.com';
     const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
